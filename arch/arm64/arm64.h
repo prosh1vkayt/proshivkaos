@@ -1,0 +1,100 @@
+/* arch/arm64/arm64.h — внутренние объявления ARM64-бэкенда.
+ * Этот заголовок НЕ подключается ничем за пределами arch/arm64/ —
+ * наружу торчит только hal.h / hal_gfx.h / hal_input.h / hal_time.h.
+ */
+#ifndef ARCH_ARM64_H
+#define ARCH_ARM64_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+/* ---------------- Карта памяти QEMU "virt" ----------------
+ * Реальный телефон отдаёт эти адреса через device tree; на этапе
+ * отладки под QEMU они фиксированы и совпадают из версии в версию.
+ * Для порта на конкретный SoC меняются только эти константы. */
+#define VIRT_UART0_BASE    0x09000000UL   /* PL011 UART        */
+#define VIRT_RTC_BASE      0x09010000UL   /* PL031 RTC          */
+#define VIRT_FWCFG_BASE    0x09020000UL   /* QEMU fw_cfg (MMIO) */
+#define VIRT_VIRTIO_BASE   0x0a000000UL   /* virtio-mmio слот 0 */
+#define VIRT_VIRTIO_STRIDE 0x200UL
+#define VIRT_VIRTIO_SLOTS  32
+
+/* ---------------- MMIO ---------------- */
+static inline void     mmio_write32(uint64_t addr, uint32_t v) { *(volatile uint32_t *)addr = v; }
+static inline uint32_t mmio_read32 (uint64_t addr)             { return *(volatile uint32_t *)addr; }
+static inline void     mmio_write16(uint64_t addr, uint16_t v) { *(volatile uint16_t *)addr = v; }
+static inline uint16_t mmio_read16 (uint64_t addr)             { return *(volatile uint16_t *)addr; }
+static inline void     mmio_write8 (uint64_t addr, uint8_t v)  { *(volatile uint8_t  *)addr = v; }
+static inline uint8_t  mmio_read8  (uint64_t addr)             { return *(volatile uint8_t  *)addr; }
+static inline void     mmio_write64(uint64_t addr, uint64_t v) { *(volatile uint64_t *)addr = v; }
+static inline uint64_t mmio_read64 (uint64_t addr)             { return *(volatile uint64_t *)addr; }
+
+/* Барьеры. dsb — дождаться завершения ВСЕХ обращений к памяти, dmb —
+ * только упорядочить. Нужны везде, где мы говорим "железо, забирай":
+ * без них процессор имеет право переставить запись дескриптора после
+ * записи в регистр-звонок, и устройство прочитает мусор. */
+static inline void dsb_sy(void) { __asm__ volatile ("dsb sy" ::: "memory"); }
+static inline void dmb_sy(void) { __asm__ volatile ("dmb sy" ::: "memory"); }
+static inline void isb(void)    { __asm__ volatile ("isb"    ::: "memory"); }
+
+/* Big-endian помощники: fw_cfg — единственный интерфейс QEMU, который
+ * общается в сетевом порядке байт вне зависимости от порядка байт CPU. */
+static inline uint16_t bswap16(uint16_t v) { return (uint16_t)((v >> 8) | (v << 8)); }
+static inline uint32_t bswap32(uint32_t v) {
+    return ((v >> 24) & 0x000000FFu) | ((v >> 8) & 0x0000FF00u) |
+           ((v <<  8) & 0x00FF0000u) | ((v << 24) & 0xFF000000u);
+}
+static inline uint64_t bswap64(uint64_t v) {
+    return ((uint64_t)bswap32((uint32_t)v) << 32) | bswap32((uint32_t)(v >> 32));
+}
+
+/* ---------------- UART (PL011) ---------------- */
+void uart_init(void);
+void uart_putc(char c);
+void uart_write(const char *s);
+int  uart_getc(void);            /* -1, если нечего читать */
+void uart_write_hex(uint64_t v); /* отладочный вывод — до появления GUI */
+
+/* ---------------- MMU и кэши ---------------- */
+/* Без MMU все обращения к ОЗУ трактуются как Device-nGnRnE (некэшируемые),
+ * и отрисовка кадра в фреймбуфер получается в десятки раз медленнее.
+ * Поэтому включаем MMU с плоским (identity) отображением 0..4 ГиБ. */
+void mmu_init(void);
+int  mmu_enabled(void);
+
+/* Обслуживание кэша для DMA. Устройство (ramfb-дисплей, virtio) читает
+ * ОЗУ мимо кэша процессора, поэтому после записи данных для устройства
+ * их надо вытолкнуть (clean), а перед чтением записанного устройством —
+ * выбросить свою устаревшую копию (invalidate). */
+void arch_dcache_clean(const void *addr, size_t len);
+void arch_dcache_invalidate(void *addr, size_t len);
+
+/* ---------------- fw_cfg (QEMU) ---------------- */
+int  fwcfg_init(void);
+/* Найти файл в каталоге fw_cfg по имени ("etc/ramfb"); возвращает 1 и
+ * записывает селектор + размер. */
+int  fwcfg_find_file(const char *name, uint16_t *select, uint32_t *size);
+/* Записать буфер в файл fw_cfg через DMA-интерфейс. 1 = успех. */
+int  fwcfg_dma_write(uint16_t select, const void *data, uint32_t len);
+
+/* ---------------- ramfb (дисплей) ---------------- */
+/* Просит QEMU показывать наш буфер как экран. Формат — XRGB8888.
+ * 1 = успех; 0, если ramfb не подключён (нет -device ramfb). */
+int  ramfb_setup(void *framebuffer, int width, int height);
+
+/* ---------------- virtio-input (тач/клавиатура) ---------------- */
+void virtio_input_init(void);
+
+typedef struct {
+    uint16_t type;
+    uint16_t code;
+    int32_t  value;
+} vinput_event_t;
+
+/* Неблокирующий опрос: 1 и заполненное событие, если оно есть. */
+int  virtio_input_poll(vinput_event_t *ev);
+/* Диапазон абсолютных координат тачскрина (для масштабирования в пиксели).
+ * 0, если абсолютного устройства не нашлось. */
+int  virtio_input_abs_range(int *max_x, int *max_y);
+
+#endif

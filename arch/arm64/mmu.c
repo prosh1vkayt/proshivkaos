@@ -1,0 +1,134 @@
+/* arch/arm64/mmu.c — плоское (identity) отображение памяти и включение кэшей.
+ *
+ * Почему это вообще нужно, если виртуальная память нам пока не сдалась:
+ * при выключенном MMU архитектура ARM обязывает трактовать ЛЮБОЕ обращение
+ * к памяти как Device-nGnRnE, то есть строго некэшируемое и неупорядочиваемое.
+ * Отрисовка кадра — это миллион записей в фреймбуфер плюс копирование
+ * бэкбуфера; на некэшируемой памяти это в разы медленнее, интерфейс
+ * начинает ощутимо тормозить даже под эмулятором. Поэтому MMU включаем —
+ * но не ради изоляции процессов (её пока нет), а именно ради кэшей.
+ *
+ * Отображение самое простое из возможных: четыре блочных дескриптора
+ * первого уровня по 1 ГиБ каждый, виртуальный адрес равен физическому.
+ *   0x00000000-0x3FFFFFFF — периферия (UART, RTC, fw_cfg, virtio) -> Device
+ *   0x40000000-0xFFFFFFFF — ОЗУ                                   -> Normal WB
+ * Никаких таблиц второго/третьего уровня, никаких 4-килобайтных страниц.
+ */
+#include "arm64.h"
+
+/* Биты дескриптора блока (ARM ARM, D5.3) */
+#define DESC_BLOCK      (1ULL << 0)   /* тип: блок (валидный, не таблица) */
+#define DESC_VALID      (1ULL << 0)
+#define DESC_ATTR(n)    ((uint64_t)(n) << 2)   /* индекс в MAIR_EL1        */
+#define DESC_AP_RW_EL1  (0ULL << 6)   /* чтение/запись только из EL1       */
+#define DESC_SH_INNER   (3ULL << 8)   /* inner shareable                    */
+#define DESC_AF         (1ULL << 10)  /* Access Flag: без него — сбой доступа */
+
+#define MAIR_IDX_DEVICE 0
+#define MAIR_IDX_NORMAL 1
+
+/* Таблица первого уровня. Выравнивание на 4 КиБ — требование архитектуры
+ * (младшие биты TTBR0_EL1 под адрес таблицы не отводятся). */
+static uint64_t g_l1_table[4] __attribute__((aligned(4096)));
+
+static int g_mmu_on = 0;
+
+int mmu_enabled(void) { return g_mmu_on; }
+
+void mmu_init(void) {
+    if (g_mmu_on) return;
+
+    for (int i = 0; i < 4; i++) {
+        uint64_t phys = (uint64_t)i << 30;      /* блоки по 1 ГиБ */
+        if (i == 0) {
+            /* Нижний гигабайт QEMU virt — исключительно регистры устройств.
+               Кэшировать их нельзя ни при каких обстоятельствах: чтение
+               регистра статуса из кэша вернёт вчерашнее значение. */
+            g_l1_table[i] = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_DEVICE) |
+                            DESC_AP_RW_EL1 | DESC_AF;
+        } else {
+            g_l1_table[i] = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NORMAL) |
+                            DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF;
+        }
+    }
+
+    /* MAIR_EL1: attr0 = 0x00 (Device-nGnRnE), attr1 = 0xFF (Normal,
+       write-back, read/write-allocate и для внутреннего, и для внешнего кэша) */
+    uint64_t mair = (0x00ULL << (8 * MAIR_IDX_DEVICE)) |
+                    (0xFFULL << (8 * MAIR_IDX_NORMAL));
+
+    /* TCR_EL1:
+       T0SZ = 32      -> виртуальное адресное пространство 4 ГиБ (32 бита),
+                          начальный уровень трансляции — первый, 4 записи
+       IRGN0/ORGN0 = 1 -> сами таблицы страниц лежат в кэшируемой памяти
+       SH0 = 3         -> inner shareable
+       TG0 = 0         -> гранула 4 КиБ
+       EPD1 = 1        -> старшая половина (TTBR1) не используется вообще
+       IPS = 1         -> физические адреса 36 бит (64 ГиБ) — с запасом */
+    uint64_t tcr = (32ULL)        |
+                   (1ULL  <<  8)  |
+                   (1ULL  << 10)  |
+                   (3ULL  << 12)  |
+                   (0ULL  << 14)  |
+                   (1ULL  << 23)  |
+                   (1ULL  << 32);
+
+    __asm__ volatile ("msr mair_el1, %0"  :: "r"(mair));
+    __asm__ volatile ("msr tcr_el1, %0"   :: "r"(tcr));
+    __asm__ volatile ("msr ttbr0_el1, %0" :: "r"((uint64_t)(uintptr_t)g_l1_table));
+
+    /* Старые записи TLB могли остаться от загрузчика — выкидываем все. */
+    __asm__ volatile ("tlbi vmalle1");
+    __asm__ volatile ("dsb nsh");
+    isb();
+
+    uint64_t sctlr;
+    __asm__ volatile ("mrs %0, sctlr_el1" : "=r"(sctlr));
+    sctlr |= (1ULL << 0);    /* M — включить MMU              */
+    sctlr |= (1ULL << 2);    /* C — включить кэш данных       */
+    sctlr |= (1ULL << 12);   /* I — включить кэш инструкций   */
+    __asm__ volatile ("msr sctlr_el1, %0" :: "r"(sctlr));
+    isb();
+
+    g_mmu_on = 1;
+}
+
+/* Размер строки кэша данных из CTR_EL0. Поле DminLine — это log2 от
+ * количества 4-байтных слов в самой короткой строке кэша данных. */
+static uint64_t dcache_line_size(void) {
+    uint64_t ctr;
+    __asm__ volatile ("mrs %0, ctr_el0" : "=r"(ctr));
+    return 4ULL << ((ctr >> 16) & 0xF);
+}
+
+/* Вытолкнуть свои записи из кэша в ОЗУ, чтобы их увидело устройство.
+ * Нужно после отрисовки кадра (ramfb-дисплей читает наш буфер напрямую)
+ * и после заполнения дескрипторов virtio. */
+void arch_dcache_clean(const void *addr, size_t len) {
+    if (!g_mmu_on) return;   /* кэш выключен — данные и так уже в ОЗУ */
+
+    uint64_t line = dcache_line_size();
+    uint64_t p    = (uint64_t)(uintptr_t)addr & ~(line - 1);
+    uint64_t end  = (uint64_t)(uintptr_t)addr + len;
+
+    for (; p < end; p += line)
+        __asm__ volatile ("dc cvac, %0" :: "r"(p) : "memory");
+    dsb_sy();
+}
+
+/* Выбросить свою (возможно, устаревшую) копию — данные туда только что
+ * записало устройство мимо кэша. Нужно перед чтением used-кольца virtio. */
+void arch_dcache_invalidate(void *addr, size_t len) {
+    if (!g_mmu_on) return;
+
+    uint64_t line = dcache_line_size();
+    uint64_t p    = (uint64_t)(uintptr_t)addr & ~(line - 1);
+    uint64_t end  = (uint64_t)(uintptr_t)addr + len;
+
+    /* civac (clean+invalidate), а не ivac: диапазон может не совпадать со
+       строками кэша по краям, и чистый invalidate потерял бы соседние
+       данные, попавшие в ту же строку. */
+    for (; p < end; p += line)
+        __asm__ volatile ("dc civac, %0" :: "r"(p) : "memory");
+    dsb_sy();
+}

@@ -1,0 +1,26 @@
+/* hal/hal_time.h — время и таймеры без привязки к архитектуре.
+ * x86:   CMOS RTC (порты 0x70/0x71) + счётчик секунд из arch/x86/rtc.c.
+ * ARM64: ARM Generic Timer (CNTPCT_EL0/CNTFRQ_EL0) для монотонного
+ *        времени + PL031 RTC для календарной даты.
+ *
+ * Монотонное время в МИЛЛИСЕКУНДАХ (а не секундах, как старый rtc_uptime)
+ * нужно именно для тача: свайп от тапа отличается не только длиной пути,
+ * но и временем — секундного разрешения для этого не хватает.
+ */
+#ifndef PROSHIVKAOS_HAL_TIME_H
+#define PROSHIVKAOS_HAL_TIME_H
+
+#include <stdint.h>
+
+void hal_time_init(void);
+
+/* Монотонное время с момента старта ядра, миллисекунды. */
+uint64_t hal_time_ms(void);
+
+/* Календарные дата/время. Если у платформы нет RTC — заполняет нулями. */
+void hal_time_rtc(int *year, int *month, int *day, int *hour, int *min, int *sec);
+
+/* Активная пауза — нужна драйверам при инициализации железа. */
+void hal_time_delay_ms(uint32_t ms);
+
+#endif

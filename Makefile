@@ -1,0 +1,402 @@
+# Makefile — proshivkaOS NEXT
+#
+# Две архитектуры и три профиля сборки:
+#
+#   ARCH=x86   (по умолчанию)          ARCH=arm64
+#     text   — текстовый shell в VGA      text   — текстовый shell в UART
+#     gui    — оконный интерфейс (XP)     —
+#     touch  — тач-интерфейс (мышь        touch  — тач-интерфейс (тачскрин
+#              изображает палец)                   через virtio-input)
+#
+# Быстрый старт:
+#   make run                 текстовый shell на x86 в QEMU
+#   make gui-run             оконный интерфейс на x86
+#   make touch-run           тач-интерфейс на x86 (мышь вместо пальца)
+#   make ARCH=arm64 run      текстовый shell на ARM64 через serial
+#   make ARCH=arm64 touch-run  тач-интерфейс на ARM64 — основная цель проекта
+#   make ARCH=arm64 image    сырой ARM64 Linux Image (build/arm64/proshivkaos.img)
+#   make ARCH=arm64 bootimg  Android boot.img под fastboot flash boot
+#
+# Требования:
+#   x86   : nasm + кросс-тулчейн i686-elf-* (Homebrew) или i386-elf-* (MacPorts)
+#   arm64 : aarch64-elf-gcc + aarch64-elf-binutils (brew install aarch64-elf-gcc)
+#   оба   : qemu-system-i386 / qemu-system-aarch64
+#
+# ВАЖНО про macOS: системный /usr/bin/ld — это Apple ld64, он НЕ понимает
+# GNU-опцию -T для ELF-линкер-скриптов. Кросс-тулчейн обязателен, фолбэк на
+# хостовой ld тут не работает ни для одной из архитектур.
+
+ARCH ?= x86
+
+# ============================================================================
+#  Тулчейн
+# ============================================================================
+# У GNU Make есть встроенные значения CC=cc и LD=ld, выставленные ДО чтения
+# этого файла, поэтому проверять "ifeq ($(CC),)" бессмысленно — переменная
+# никогда не пустая. Спрашиваем $(origin ...): 'default' значит "встроенное
+# значение, пользователь его не задавал", 'command line' — "передано явно
+# через make CC=...", такое не трогаем.
+
+ifeq ($(ARCH),x86)
+
+  AS := nasm
+  ifeq ($(origin CC),default)
+    ifneq (, $(shell which i686-elf-gcc 2>/dev/null))
+      CC := i686-elf-gcc
+    else ifneq (, $(shell which i386-elf-gcc 2>/dev/null))
+      CC := i386-elf-gcc
+    else
+      CC := gcc
+      CFLAGS_HOST_FALLBACK := -m32
+    endif
+  endif
+  ifeq ($(origin LD),default)
+    ifneq (, $(shell which i686-elf-ld 2>/dev/null))
+      LD := i686-elf-ld
+    else ifneq (, $(shell which i386-elf-ld 2>/dev/null))
+      LD := i386-elf-ld
+    else
+      LD := ld
+    endif
+  endif
+
+  ARCH_CFLAGS  := $(CFLAGS_HOST_FALLBACK)
+  LINKER_SCRIPT := linker.ld
+  LDFLAGS      := -T $(LINKER_SCRIPT) -nostdlib -m elf_i386
+  ASFLAGS      := -f elf32
+  QEMU         := qemu-system-i386
+
+else ifeq ($(ARCH),arm64)
+
+  # Порядок предпочтения: bare-metal тулчейны (elf/none-elf) идут первыми —
+  # они не тянут заголовки и стартовый код Linux-userspace, которых у нас нет.
+  ifeq ($(origin CC),default)
+    ifneq (, $(shell which aarch64-elf-gcc 2>/dev/null))
+      CC := aarch64-elf-gcc
+    else ifneq (, $(shell which aarch64-none-elf-gcc 2>/dev/null))
+      CC := aarch64-none-elf-gcc
+    else ifneq (, $(shell which aarch64-linux-gnu-gcc 2>/dev/null))
+      CC := aarch64-linux-gnu-gcc
+    else
+      $(error Не найден кросс-компилятор под aarch64. Установите: brew install aarch64-elf-gcc)
+    endif
+  endif
+  ifeq ($(origin LD),default)
+    ifneq (, $(shell which aarch64-elf-ld 2>/dev/null))
+      LD := aarch64-elf-ld
+    else ifneq (, $(shell which aarch64-none-elf-ld 2>/dev/null))
+      LD := aarch64-none-elf-ld
+    else
+      LD := aarch64-linux-gnu-ld
+    endif
+  endif
+  OBJCOPY ?= $(patsubst %-ld,%-objcopy,$(LD))
+
+  # -mgeneral-regs-only: запретить компилятору использовать регистры FP/SIMD.
+  #   В ядре они не сохраняются при переключении контекста и вдобавок по
+  #   умолчанию отключены в CPACR_EL1 — обращение к ним даёт исключение.
+  # -mstrict-align: не генерировать невыровненные обращения к памяти.
+  #   До включения MMU вся память трактуется как Device-nGnRnE, где
+  #   невыровненный доступ — гарантированный abort.
+  ARCH_CFLAGS   := -mgeneral-regs-only -mstrict-align -fno-common
+  LINKER_SCRIPT := arch/arm64/linker.ld
+  LDFLAGS       := -T $(LINKER_SCRIPT) -nostdlib
+  QEMU          := qemu-system-aarch64
+
+  # Параметры упаковки в Android boot.img (fastboot). Значения по умолчанию —
+  # типовые для Qualcomm; под конкретный аппарат берутся из его исходников
+  # ядра или из распакованного стокового boot.img.
+  BOOTIMG_BASE      ?= 0x80000000
+  BOOTIMG_PAGESIZE  ?= 2048
+  BOOTIMG_CMDLINE   ?= console=ttyMSM0,115200n8
+
+else
+  $(error Неизвестная ARCH=$(ARCH). Допустимо: x86, arm64)
+endif
+
+# Разрешение экрана тач-сборки — ОБЩЕЕ для обеих архитектур. 480x960 —
+# портрет 2:1, как у современных телефонов. На ARM64 его получает ramfb,
+# на x86 — VBE (интерфейс Bochs умеет произвольные разрешения, не только
+# каноничные 640x480/800x600, поэтому портрет там тоже доступен).
+# Верхняя граница — GFXFB_MAX_PIXELS (720x1440), см. gui/gfxfb.h.
+SCREEN_W ?= 480
+SCREEN_H ?= 960
+
+BUILD  := build/$(ARCH)
+OBJDIR := $(BUILD)/obj
+
+# libgcc — вспомогательные функции самого компилятора. Своей libc у нас нет
+# и не будет, но libgcc это не libc: там лежат вещи, которые компилятор
+# подставляет САМ, когда у процессора нет подходящей инструкции. Например,
+# деление 64-битного числа на 32-битном x86 (__udivdi3): аптайм в
+# миллисекундах его использует, и без libgcc линковка падает.
+LIBGCC := $(shell $(CC) $(ARCH_CFLAGS) -print-libgcc-file-name 2>/dev/null)
+
+CFLAGS := -std=gnu11 -ffreestanding -fno-stack-protector -fno-pie -nostdlib \
+          -fno-builtin -Wall -Wextra -O2 $(ARCH_CFLAGS) \
+          -DPROSHIVKA_SCREEN_W=$(SCREEN_W) -DPROSHIVKA_SCREEN_H=$(SCREEN_H) \
+          -Ihal -Ifs -Ishell -Iapps -Igui -Igui/touch -Iarch/$(ARCH)
+
+# ============================================================================
+#  Списки исходников
+# ============================================================================
+
+# --- Общее ядро: не знает ни одной архитектурной подробности ---------------
+CORE_SOURCES := \
+    kernel/kstring.c \
+    hal/hal_mem.c \
+    hal/hal_thread.c \
+    fs/ramfs.c
+
+# --- Графика, общая для всех платформ --------------------------------------
+GFX_COMMON_SOURCES := \
+    gui/palette.c \
+    gui/gfxfb.c \
+    gui/hal_gfx.c \
+    gui/font8x8.c
+
+ifeq ($(ARCH),x86)
+
+  ARCH_BASE_SOURCES := \
+      arch/x86/cpu.c \
+      arch/x86/rtc.c \
+      arch/x86/pit.c \
+      hal/hal_time_x86.c
+
+  # Текстовый профиль
+  TEXT_SOURCES := $(CORE_SOURCES) \
+      kernel/kernel.c kernel/panic.c \
+      hal/hal_console.c \
+      arch/x86/vga.c arch/x86/keyboard.c arch/x86/cpu.c \
+      shell/shell.c
+  TEXT_ASM := boot/boot.asm
+
+  # Графический бэкенд экрана и ввода
+  ARCH_GFX_SOURCES := \
+      arch/x86/vga13h.c arch/x86/pci.c arch/x86/vbe.c \
+      arch/x86/hal_gfx_x86.c
+  ARCH_INPUT_SOURCES := \
+      arch/x86/keyboard.c arch/x86/mouse.c hal/hal_input_x86.c
+
+  BOOT_ASM := boot/boot.asm
+
+else
+
+  ARCH_BASE_SOURCES := \
+      arch/arm64/cpu.c \
+      arch/arm64/uart.c \
+      arch/arm64/mmu.c \
+      arch/arm64/timer.c
+
+  TEXT_SOURCES := $(CORE_SOURCES) $(ARCH_BASE_SOURCES) \
+      kernel/kernel.c kernel/panic.c \
+      hal/hal_console_arm64.c \
+      shell/shell.c
+  TEXT_ASM :=
+
+  ARCH_GFX_SOURCES := \
+      arch/arm64/fwcfg.c arch/arm64/ramfb.c arch/arm64/hal_gfx_arm64.c
+  ARCH_INPUT_SOURCES := \
+      arch/arm64/virtio_input.c hal/hal_input_arm64.c
+
+  BOOT_ASM :=
+  BOOT_S   := arch/arm64/boot.S arch/arm64/vectors.S
+
+endif
+
+# --- Оконный интерфейс (десктоп, только x86) -------------------------------
+GUI_SOURCES := $(CORE_SOURCES) $(GFX_COMMON_SOURCES) $(ARCH_BASE_SOURCES) \
+    $(ARCH_GFX_SOURCES) $(ARCH_INPUT_SOURCES) \
+    kernel/kernel_gui.c kernel/panic_gui.c \
+    gui/window.c gui/wallpaper.c \
+    gui/wallpaper_320x200.c gui/wallpaper_640x480.c gui/wallpaper_800x600.c \
+    gui/cursor.c gui/gconsole.c gui/terminal_app.c gui/settings_app.c gui/wm.c
+
+# --- Тач-интерфейс (обе архитектуры) ---------------------------------------
+# Запечённые обои (gui/wallpaper_*.c) сюда НЕ входят намеренно: они
+# нарисованы под landscape-разрешения 4:3 и на портретном экране телефона
+# бесполезны. Фон рисуется градиентом, см. gui/touch/touch_ui.c.
+TOUCH_SOURCES := $(CORE_SOURCES) $(GFX_COMMON_SOURCES) $(ARCH_BASE_SOURCES) \
+    $(ARCH_GFX_SOURCES) $(ARCH_INPUT_SOURCES) \
+    kernel/kernel_touch.c kernel/panic_gui.c \
+    gui/window.c gui/cursor.c gui/gconsole.c gui/terminal_app.c \
+    gui/touch/touch_theme.c \
+    gui/touch/osk.c \
+    gui/touch/app_terminal.c \
+    gui/touch/app_settings.c \
+    gui/touch/app_files.c \
+    gui/touch/app_about.c \
+    gui/touch/touch_ui.c
+
+# ============================================================================
+#  Преобразование списков исходников в объектные файлы
+# ============================================================================
+# Объектники складываются в build/$(ARCH)/obj/, а не рядом с исходниками:
+# иначе .o от x86-сборки и от arm64-сборки перезаписывали бы друг друга,
+# и "make ARCH=arm64" после "make" собирал бы франкенштейна.
+obj_of = $(patsubst %.c,$(OBJDIR)/%.o,$(patsubst %.asm,$(OBJDIR)/%.o,$(patsubst %.S,$(OBJDIR)/%.o,$(1))))
+
+# Уникализация: некоторые файлы (например arch/x86/keyboard.c) попадают в
+# список дважды — линкер на дубликаты объектников ругается.
+uniq = $(if $(1),$(firstword $(1)) $(call uniq,$(filter-out $(firstword $(1)),$(1))))
+
+TEXT_OBJ  := $(call uniq,$(call obj_of,$(TEXT_SOURCES) $(TEXT_ASM) $(BOOT_S)))
+GUI_OBJ   := $(call uniq,$(call obj_of,$(GUI_SOURCES) $(BOOT_ASM) $(BOOT_S)))
+TOUCH_OBJ := $(call uniq,$(call obj_of,$(TOUCH_SOURCES) $(BOOT_ASM) $(BOOT_S)))
+
+KERNEL_ELF  := $(BUILD)/kernel.elf
+GUI_ELF     := $(BUILD)/kernel_gui.elf
+TOUCH_ELF   := $(BUILD)/kernel_touch.elf
+RAW_IMAGE   := $(BUILD)/proshivkaos.img
+BOOT_IMG    := $(BUILD)/proshivkaos_boot.img
+ISO         := $(BUILD)/proshivkaos.iso
+
+.PHONY: all text gui touch clean run gui-run touch-run iso image bootimg help
+
+all: text
+
+# ============================================================================
+#  Правила компиляции
+# ============================================================================
+$(OBJDIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJDIR)/%.o: %.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJDIR)/%.o: %.asm
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) $< -o $@
+
+# ============================================================================
+#  Цели сборки
+# ============================================================================
+text: $(KERNEL_ELF)
+$(KERNEL_ELF): $(TEXT_OBJ) $(LINKER_SCRIPT)
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) -o $@ $(TEXT_OBJ) $(LIBGCC)
+	@echo "собрано: $@"
+
+gui: $(GUI_ELF)
+$(GUI_ELF): $(GUI_OBJ) $(LINKER_SCRIPT)
+ifneq ($(ARCH),x86)
+	$(error Профиль gui существует только для ARCH=x86 — он завязан на VGA/VBE. \
+	        Для ARM64 используйте профиль touch)
+endif
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) -o $@ $(GUI_OBJ) $(LIBGCC)
+	@echo "собрано: $@"
+
+touch: $(TOUCH_ELF)
+$(TOUCH_ELF): $(TOUCH_OBJ) $(LINKER_SCRIPT)
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) -o $@ $(TOUCH_OBJ) $(LIBGCC)
+	@echo "собрано: $@"
+
+# ============================================================================
+#  Образы для реального железа (только ARM64)
+# ============================================================================
+# Сырой ARM64 Linux Image: ELF-обвязка снимается, остаётся то, что грузчик
+# кладёт в память как есть. Заголовок Image уже внутри — см. arch/arm64/boot.S.
+image: $(TOUCH_ELF)
+ifneq ($(ARCH),arm64)
+	$(error Цель image имеет смысл только для ARCH=arm64)
+endif
+	$(OBJCOPY) -O binary $(TOUCH_ELF) $(RAW_IMAGE)
+	@echo "собрано: $(RAW_IMAGE) ($$(wc -c < $(RAW_IMAGE)) байт)"
+
+# Android boot.img — то, что принимает fastboot. Собственный упаковщик в
+# tools/mkbootimg.py: формат заголовка v0 простой, а тащить ради него
+# зависимость из AOSP незачем.
+bootimg: image
+	python3 tools/mkbootimg.py \
+	    --kernel $(RAW_IMAGE) \
+	    --base $(BOOTIMG_BASE) \
+	    --pagesize $(BOOTIMG_PAGESIZE) \
+	    --cmdline "$(BOOTIMG_CMDLINE)" \
+	    --output $(BOOT_IMG)
+
+# ============================================================================
+#  Запуск в QEMU
+# ============================================================================
+ifeq ($(ARCH),x86)
+
+run: $(KERNEL_ELF)
+	$(QEMU) -kernel $(KERNEL_ELF)
+
+run-big: $(KERNEL_ELF)
+	$(QEMU) -kernel $(KERNEL_ELF) -display sdl
+
+gui-run: $(GUI_ELF)
+	$(QEMU) -kernel $(GUI_ELF)
+
+gui-run-big: $(GUI_ELF)
+	$(QEMU) -kernel $(GUI_ELF) -display sdl
+
+# На x86 пальцем работает мышь: hal_input_x86.c переводит её относительные
+# смещения в те же события "нажали/ведут/отпустили", что приходят с
+# тачскрина на ARM64. Удобно для быстрой отладки интерфейса.
+touch-run: $(TOUCH_ELF)
+	$(QEMU) -kernel $(TOUCH_ELF) -display sdl
+
+iso: $(KERNEL_ELF)
+	mkdir -p $(BUILD)/isodir/boot/grub
+	cp $(KERNEL_ELF) $(BUILD)/isodir/boot/kernel.elf
+	echo 'menuentry "proshivkaOS NEXT" {' >  $(BUILD)/isodir/boot/grub/grub.cfg
+	echo '  multiboot /boot/kernel.elf'   >> $(BUILD)/isodir/boot/grub/grub.cfg
+	echo '}'                              >> $(BUILD)/isodir/boot/grub/grub.cfg
+	grub-mkrescue -o $(ISO) $(BUILD)/isodir
+
+run-iso: iso
+	$(QEMU) -cdrom $(ISO)
+
+else
+
+# Текстовый профиль: экрана нет вообще, вся жизнь в последовательном порту.
+run: $(KERNEL_ELF)
+	$(QEMU) -M virt -cpu cortex-a53 -m 256 -nographic -kernel $(KERNEL_ELF)
+
+# Тач-профиль:
+#   -device ramfb                 экран (см. arch/arm64/ramfb.c)
+#   -device virtio-tablet-device  тачскрин: абсолютные координаты
+#   -device virtio-keyboard-device  клавиатура (экранная тоже есть, эта — для удобства)
+#   -serial mon:stdio             отладочный вывод ядра в терминал
+touch-run: $(TOUCH_ELF)
+	$(QEMU) -M virt -cpu cortex-a53 -m 512 \
+	    -kernel $(TOUCH_ELF) \
+	    -device ramfb \
+	    -device virtio-tablet-device \
+	    -device virtio-keyboard-device \
+	    -serial mon:stdio
+
+# То же самое, но из сырого Image — проверка, что образ для реального
+# железа собран правильно и грузится так же, как ELF.
+image-run: image
+	$(QEMU) -M virt -cpu cortex-a53 -m 512 \
+	    -kernel $(RAW_IMAGE) \
+	    -device ramfb \
+	    -device virtio-tablet-device \
+	    -device virtio-keyboard-device \
+	    -serial mon:stdio
+
+endif
+
+# ============================================================================
+clean:
+	rm -rf build
+
+help:
+	@echo "proshivkaOS NEXT — цели сборки"
+	@echo ""
+	@echo "  make [ARCH=x86|arm64] text     текстовый shell"
+	@echo "  make gui                       оконный интерфейс (только x86)"
+	@echo "  make [ARCH=...] touch          тач-интерфейс"
+	@echo "  make [ARCH=...] run            запустить текстовый профиль в QEMU"
+	@echo "  make [ARCH=...] touch-run      запустить тач-интерфейс в QEMU"
+	@echo "  make ARCH=arm64 image          сырой ARM64 Image для загрузчика"
+	@echo "  make ARCH=arm64 bootimg        Android boot.img для fastboot"
+	@echo "  make clean                     удалить build/"
+	@echo ""
+	@echo "  Разрешение тач-сборки: make ARCH=arm64 touch SCREEN_W=720 SCREEN_H=1440"
