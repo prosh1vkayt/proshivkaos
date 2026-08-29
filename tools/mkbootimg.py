@@ -29,7 +29,9 @@ import struct
 import sys
 
 BOOT_MAGIC = b"ANDROID!"
-HEADER_SIZE = 1632          # размер struct boot_img_hdr версии 0
+HEADER_SIZE_V0 = 1632       # размер struct boot_img_hdr версии 0
+HEADER_SIZE_V3 = 1580       # версии 3
+HEADER_SIZE_V4 = 1584       # версии 4 (добавлено поле signature_size)
 
 
 def pad_to(size, page_size):
@@ -54,16 +56,31 @@ def main():
     ap.add_argument("--pagesize", type=int, default=2048, help="размер страницы раздела")
     ap.add_argument("--cmdline", default="", help="командная строка ядра")
     ap.add_argument("--name", default="proshivkaOS", help="имя продукта (до 16 байт)")
+    ap.add_argument("--header-version", type=int, default=0, choices=[0, 3, 4],
+                    help="версия заголовка: 0 — старые устройства (Redmi Note 4 и т.п.), "
+                         "3/4 — Android 12+ с GKI (Pixel 6/6a и новее)")
+    ap.add_argument("--os-version", default="0.0.0",
+                    help="версия Android для поля os_version, например 13.0.0. "
+                         "Некоторые загрузчики откатывают образ с версией ниже текущей")
+    ap.add_argument("--os-patch-level", default="1970-01",
+                    help="уровень патчей в формате ГГГГ-ММ")
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
 
     base = int(args.base, 0)
     page = args.pagesize
 
+    # В третьей версии заголовка размер страницы зафиксирован спецификацией
+    # и в самом образе больше не хранится — договорённость на 4096.
+    if args.header_version >= 3:
+        page = 4096
+
     if page & (page - 1):
         sys.exit("pagesize должен быть степенью двойки")
-    if page < HEADER_SIZE:
-        sys.exit("pagesize меньше размера заголовка (%d)" % HEADER_SIZE)
+
+    header_size = {0: HEADER_SIZE_V0, 3: HEADER_SIZE_V3, 4: HEADER_SIZE_V4}[args.header_version]
+    if page < header_size:
+        sys.exit("pagesize меньше размера заголовка (%d)" % header_size)
 
     kernel = read(args.kernel)
     ramdisk = read(args.ramdisk)
@@ -83,6 +100,24 @@ def main():
               "(получено 0x%08X). Загрузчик может его не принять." % magic,
               file=sys.stderr)
 
+    # os_version — упакованное поле: версия Android и уровень патчей в одном
+    # 32-битном числе. Загрузчики с защитой от отката сравнивают именно его.
+    def pack_os_version(ver, patch):
+        try:
+            parts = [int(x) for x in ver.split(".")][:3]
+            while len(parts) < 3:
+                parts.append(0)
+            a, b, c = parts
+            year, month = (int(x) for x in patch.split("-")[:2])
+        except ValueError:
+            sys.exit("не разобрать --os-version/--os-patch-level")
+        if not (2000 <= year <= 2127 and 1 <= month <= 12):
+            year, month = 2000, 1
+        return ((a << 25) | (b << 18) | (c << 11) |
+                ((year - 2000) << 4) | month)
+
+    os_version = pack_os_version(args.os_version, args.os_patch_level)
+
     # Каноничные смещения mkbootimg из AOSP.
     kernel_addr = base + 0x00008000
     ramdisk_addr = base + 0x01000000
@@ -101,6 +136,42 @@ def main():
         sha.update(struct.pack("<I", len(blob)))
     img_id = sha.digest()[:20] + b"\x00" * 12   # поле id[8] — 32 байта
 
+    if args.header_version >= 3:
+        # В версии 3 из заголовка убрали ВСЕ адреса загрузки: куда класть
+        # ядро и ramdisk, решает сам загрузчик. Убрали и second, и dtb —
+        # устройство дерево теперь лежит в отдельном образе vendor_boot.
+        header = b"".join([
+            BOOT_MAGIC,
+            struct.pack("<I", len(kernel)),
+            struct.pack("<I", len(ramdisk)),
+            struct.pack("<I", os_version),
+            struct.pack("<I", header_size),
+            struct.pack("<IIII", 0, 0, 0, 0),          # reserved
+            struct.pack("<I", args.header_version),
+            cmdline[:1536].ljust(1536, b"\x00"),
+        ])
+        if args.header_version == 4:
+            header += struct.pack("<I", 0)             # signature_size
+        assert len(header) == header_size, len(header)
+
+        with open(args.output, "wb") as out:
+            out.write(header)
+            out.write(b"\x00" * pad_to(len(header), page))
+            for blob in (kernel, ramdisk):
+                if not blob:
+                    continue
+                out.write(blob)
+                out.write(b"\x00" * pad_to(len(blob), page))
+
+        print("собрано: %s (заголовок версии %d)" % (args.output, args.header_version))
+        print("  ядро    : %d байт" % len(kernel))
+        print("  адреса загрузки в заголовке версии 3+ не хранятся —")
+        print("  их выбирает загрузчик устройства.")
+        print()
+        print("Прошивка (бутлоадер должен быть разлочен):")
+        print("  fastboot flash boot %s" % args.output)
+        return
+
     header = b"".join([
         BOOT_MAGIC,
         struct.pack("<I", len(kernel)),
@@ -112,13 +183,13 @@ def main():
         struct.pack("<I", tags_addr),
         struct.pack("<I", page),
         struct.pack("<I", 0),          # header_version = 0
-        struct.pack("<I", 0),          # os_version + os_patch_level
+        struct.pack("<I", os_version), # os_version + os_patch_level
         args.name.encode()[:16].ljust(16, b"\x00"),
         cmdline[:512].ljust(512, b"\x00"),
         img_id,
         cmdline[512:].ljust(1024, b"\x00"),   # extra_cmdline
     ])
-    assert len(header) == HEADER_SIZE, len(header)
+    assert len(header) == HEADER_SIZE_V0, len(header)
 
     with open(args.output, "wb") as out:
         out.write(header)
@@ -129,7 +200,7 @@ def main():
             out.write(blob)
             out.write(b"\x00" * pad_to(len(blob), page))
 
-    total = HEADER_SIZE + pad_to(HEADER_SIZE, page)
+    total = HEADER_SIZE_V0 + pad_to(HEADER_SIZE_V0, page)
     for blob in (kernel, ramdisk, second):
         if blob:
             total += len(blob) + pad_to(len(blob), page)
