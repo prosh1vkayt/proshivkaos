@@ -60,6 +60,20 @@ void touch_draw_button(int x, int y, int w, int h, const char *label,
 void touch_draw_app_icon(int x, int y, int size, const char *glyph,
                           const char *label, uint8_t top, uint8_t bottom, int pressed);
 
+/* Сегментная полоса-диаграмма, как индикатор занятости хранилища в
+ * настройках телефона: цветные доли на общей дорожке. weights задают
+ * пропорции, total_weight — сколько составляет ВСЯ полоса (остаток до него
+ * закрашивается цветом дорожки). */
+void touch_draw_segment_bar(int x, int y, int w, int h,
+                             const uint8_t *colors, const int *weights,
+                             int count, int total_weight, uint8_t track);
+
+/* Заголовок экрана: стрелка "назад" слева и название. Возвращает высоту.
+ * Прямоугольник стрелки отдаётся наружу, чтобы приложение могло обработать
+ * нажатие по ней. */
+int  touch_draw_screen_header(int x, int y, int w, const char *title);
+void touch_header_back_rect(int x, int y, int *bx, int *by, int *bw, int *bh);
+
 /* Переключатель "вкл/выкл" для экрана настроек. */
 void touch_draw_switch(int x, int y, int w, int h, int on);
 

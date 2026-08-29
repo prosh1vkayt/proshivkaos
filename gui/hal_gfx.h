@@ -63,8 +63,42 @@ enum {
     GFX_UI_GRAD_TOP    = 44,
     GFX_UI_GRAD_MID    = 45,
     GFX_UI_GRAD_BOT    = 46,
-    GFX_UI_SHADOW      = 47
+    GFX_UI_SHADOW      = 47,
+
+    /* 48..71 — плавный градиент "планеты" на экране "о системе".
+     * Обращаться по GFX_HERO_RAMP + i, а не поимённо: это ступени одной
+     * шкалы, а не отдельные цвета. */
+    GFX_HERO_RAMP      = 48,
+
+    /* 72..75 — фон карточки-героя */
+    GFX_HERO_BG_TOP    = 72,
+    GFX_HERO_BG_MID    = 73,
+    GFX_HERO_BG_BOT    = 74,
+    GFX_HERO_GLOW      = 75,
+
+    /* 76..83 — сегменты диаграмм */
+    GFX_SEG_BLUE       = 76,
+    GFX_SEG_PURPLE     = 77,
+    GFX_SEG_ORANGE     = 78,
+    GFX_SEG_YELLOW     = 79,
+    GFX_SEG_TEAL       = 80,
+    GFX_SEG_PINK       = 81,
+    GFX_SEG_GREY       = 82,
+    GFX_SEG_LIGHT      = 83,
+
+    /* 84..91 — вторичные акценты и поверхности */
+    GFX_UI_ACCENT2      = 84,
+    GFX_UI_ACCENT2_DARK = 85,
+    GFX_UI_ACCENT3      = 86,
+    GFX_UI_ACCENT3_DARK = 87,
+    GFX_UI_SURFACE_3    = 88,
+    GFX_UI_CARD_HI      = 89,
+    GFX_UI_DIVIDER_SOFT = 90,
+    GFX_UI_TEXT_BRIGHT  = 91
 };
+
+/* Сколько ступеней в градиенте "планеты" (индексы GFX_HERO_RAMP..+23). */
+#define GFX_HERO_RAMP_COUNT 24
 
 /* ---------------- Инициализация экрана (арх-зависимая часть) ---------------- */
 void hal_gfx_init(void);
@@ -111,6 +145,27 @@ void hal_gfx_draw_rounded_rect(int x, int y, int w, int h, uint8_t color, int ra
 void hal_gfx_draw_glossy_button(int x, int y, int w, int h,
                                  uint8_t top_color, uint8_t bottom_color,
                                  uint8_t border_color, int radius);
+
+/* Ограничить рисование прямоугольником — всё за его пределами отбрасывается.
+ * Обязательно снимать через hal_gfx_reset_clip(), иначе следующий кадр
+ * нарисуется наполовину. */
+void hal_gfx_set_clip(int x, int y, int w, int h);
+void hal_gfx_reset_clip(void);
+
+/* Лежит ли точка (i,j) внутри скруглённого прямоугольника w x h (координаты
+ * ОТНОСИТЕЛЬНО его левого верхнего угла). Нужен тем, кто рисует внутри
+ * скруглённой формы попиксельно — например, сегментной диаграмме. */
+int hal_gfx_in_rounded_rect(int i, int j, int w, int h, int radius);
+
+/* Освещённая сфера: заливка круга радиальным градиентом по шкале цветов.
+ * Источник света задаётся отдельной точкой (обычно смещённой к верхнему
+ * левому краю) — именно смещение света, а не концентрические кольца из
+ * центра, и создаёт ощущение объёма.
+ *
+ * Извлекать корень на каждый пиксель не нужно: расстояние сравнивается с
+ * заранее посчитанными КВАДРАТАМИ границ ступеней. */
+void hal_gfx_fill_sphere(int cx, int cy, int r, int light_x, int light_y,
+                          int ramp_start, int ramp_count);
 
 /* Мягкая тень под карточкой — несколько скруглённых прямоугольников со
  * сдвигом. На индексной палитре альфа-канала нет, поэтому "мягкость"

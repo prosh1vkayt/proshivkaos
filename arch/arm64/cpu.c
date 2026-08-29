@@ -10,6 +10,65 @@
 
 const char *hal_arch_name(void) { return "ARM64"; }
 
+/* MIDR_EL1 — паспорт ядра: старший байт говорит, кто его сделал, биты
+ * 15:4 — какое именно ядро. Перечислены ядра, которые реально встречаются
+ * в телефонах и в QEMU; всё остальное честно показывается кодом. */
+const char *hal_cpu_name(void) {
+    static char buf[32];
+
+    uint64_t midr;
+    __asm__ volatile ("mrs %0, midr_el1" : "=r"(midr));
+
+    unsigned implementer = (unsigned)((midr >> 24) & 0xFF);
+    unsigned part        = (unsigned)((midr >> 4)  & 0xFFF);
+
+    const char *vendor;
+    switch (implementer) {
+        case 0x41: vendor = "ARM";      break;
+        case 0x51: vendor = "QUALCOMM"; break;
+        case 0x4E: vendor = "NVIDIA";   break;
+        case 0x53: vendor = "SAMSUNG";  break;
+        case 0x61: vendor = "APPLE";    break;
+        case 0x48: vendor = "HISILICON"; break;
+        default:   vendor = "CPU";      break;
+    }
+
+    const char *core = 0;
+    switch (part) {
+        case 0xD03: core = "CORTEX-A53"; break;
+        case 0xD04: core = "CORTEX-A35"; break;
+        case 0xD05: core = "CORTEX-A55"; break;
+        case 0xD07: core = "CORTEX-A57"; break;
+        case 0xD08: core = "CORTEX-A72"; break;
+        case 0xD09: core = "CORTEX-A73"; break;
+        case 0xD0A: core = "CORTEX-A75"; break;
+        case 0xD0B: core = "CORTEX-A76"; break;
+        case 0xD0D: core = "CORTEX-A77"; break;
+        case 0xD41: core = "CORTEX-A78"; break;
+        case 0xD44: core = "CORTEX-X1";  break;
+        case 0xD46: core = "CORTEX-A510"; break;
+        case 0xD47: core = "CORTEX-A710"; break;
+        case 0xD48: core = "CORTEX-X2";  break;
+        default:    core = 0;            break;
+    }
+
+    int n = 0;
+    for (const char *p = vendor; *p && n < 24; p++) buf[n++] = *p;
+    buf[n++] = ' ';
+
+    if (core) {
+        for (const char *p = core; *p && n < 30; p++) buf[n++] = *p;
+    } else {
+        static const char hex[] = "0123456789ABCDEF";
+        buf[n++] = '0'; buf[n++] = 'X';
+        buf[n++] = hex[(part >> 8) & 0xF];
+        buf[n++] = hex[(part >> 4) & 0xF];
+        buf[n++] = hex[part & 0xF];
+    }
+    buf[n] = '\0';
+    return buf;
+}
+
 void hal_arch_init(void) {
     /* Порядок важен: сначала MMU (иначе всё ОЗУ некэшируемое и медленное),
        потом системный счётчик — hal_time_ms() нужен уже драйверам. */

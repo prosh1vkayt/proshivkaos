@@ -219,9 +219,13 @@ static void run_command(terminal_app_t *app, char *line) {
         gconsole_putc(&app->console, 'S');
 
     } else if (str_eq(argv[0], "neofetch")) {
-        gconsole_write(&app->console, "\nPROSHIVKAOS NEXT");
-        gconsole_write(&app->console, "\nGUI: MODE13H/VBE");
-        gconsole_write(&app->console, "\nFS : RAMFS");
+        gconsole_write(&app->console, "\nPROSHIVKAOS NEXT ");
+        gconsole_write(&app->console, PROSHIVKAOS_VERSION);
+        gconsole_write(&app->console, "\nARCH: ");
+        gconsole_write(&app->console, hal_arch_name());
+        gconsole_write(&app->console, "\nCPU : ");
+        gconsole_write(&app->console, hal_cpu_name());
+        gconsole_write(&app->console, "\nFS  : RAMFS");
 
     } else if (str_eq(argv[0], "help")) {
         gconsole_write(&app->console, "\nLS CD PWD MKDIR CAT TOUCH EDIT");

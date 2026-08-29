@@ -22,6 +22,19 @@ static int g_format = GFXFB_FMT_PAL8;
 
 static uint8_t g_backbuffer[GFXFB_MAX_PIXELS];
 
+/* Прямоугольник отсечения. Нулевая ширина означает "отсечения нет". */
+static int g_clip_x = 0, g_clip_y = 0, g_clip_w = 0, g_clip_h = 0;
+
+void gfxfb_set_clip(int x, int y, int w, int h) {
+    g_clip_x = x; g_clip_y = y;
+    g_clip_w = w; g_clip_h = h;
+}
+
+void gfxfb_reset_clip(void) {
+    g_clip_w = 0;
+    g_clip_h = 0;
+}
+
 void gfxfb_bind(volatile void *fb, int width, int height, int pitch_bytes, int fmt) {
     g_fb     = (volatile uint8_t *)fb;
     g_width  = width;
@@ -37,6 +50,10 @@ uint8_t *gfxfb_backbuffer(void) { return g_backbuffer; }
 
 void gfxfb_put_pixel(int x, int y, uint8_t color) {
     if (x < 0 || y < 0 || x >= g_width || y >= g_height) return;
+    if (g_clip_w > 0 &&
+        (x < g_clip_x || y < g_clip_y ||
+         x >= g_clip_x + g_clip_w || y >= g_clip_y + g_clip_h))
+        return;
     g_backbuffer[y * g_width + x] = color;
 }
 

@@ -132,6 +132,13 @@ static void rounded_outline(int x, int y, int w, int h, uint8_t color, int radiu
     }
 }
 
+void hal_gfx_set_clip(int x, int y, int w, int h) { gfxfb_set_clip(x, y, w, h); }
+void hal_gfx_reset_clip(void)                      { gfxfb_reset_clip(); }
+
+int hal_gfx_in_rounded_rect(int i, int j, int w, int h, int radius) {
+    return !in_corner_cut(i, j, w, h, radius);
+}
+
 void hal_gfx_fill_rounded_rect(int x, int y, int w, int h, uint8_t color, int radius) {
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++)
@@ -170,6 +177,66 @@ void hal_gfx_draw_glossy_button(int x, int y, int w, int h,
     }
 
     rounded_outline(x, y, w, h, border_color, radius);
+}
+
+void hal_gfx_fill_sphere(int cx, int cy, int r, int light_x, int light_y,
+                          int ramp_start, int ramp_count) {
+    if (r <= 0 || ramp_count <= 0) return;
+    if (ramp_count > 32) ramp_count = 32;
+
+    /* Самая дальняя от источника света точка круга — противоположный край,
+       то есть расстояние от света до центра плюс радиус. По этой величине
+       и растягивается шкала, иначе на сильно смещённом свете половина
+       оттенков не использовалась бы вовсе. */
+    int lx = light_x - cx, ly = light_y - cy;
+    int light_dist = 0;
+    while ((light_dist + 1) * (light_dist + 1) <= lx * lx + ly * ly)
+        light_dist++;                       /* целочисленный корень */
+    int max_d = light_dist + r;
+    if (max_d < 1) max_d = 1;
+
+    /* Каждая ступень шкалы делится ещё на четыре подступени, а между двумя
+       соседними цветами пиксели раскидываются матрицей Bayer. Из 24 цветов
+       получается 96 воспринимаемых уровней — без этого на сфере размером в
+       пол-экрана отчётливо видны концентрические кольца.
+
+       Границы хранятся сразу в КВАДРАТАХ расстояния, чтобы не извлекать
+       корень для каждого из сотен тысяч пикселей, а искать по ним —
+       двоичным поиском, а не перебором. */
+    int sub_count = ramp_count * 4;
+    int bound[128];
+    for (int i = 0; i < sub_count; i++) {
+        int d = (int)(((long)max_d * (i + 1)) / sub_count);
+        bound[i] = d * d;
+    }
+
+    int r2 = r * r;
+    for (int y = -r; y <= r; y++) {
+        for (int x = -r; x <= r; x++) {
+            if (x * x + y * y > r2) continue;        /* вне круга */
+
+            int dx = (cx + x) - light_x;
+            int dy = (cy + y) - light_y;
+            int d2 = dx * dx + dy * dy;
+
+            int lo = 0, hi = sub_count - 1, sub = sub_count - 1;
+            while (lo <= hi) {
+                int mid = (lo + hi) / 2;
+                if (d2 <= bound[mid]) { sub = mid; hi = mid - 1; }
+                else                  { lo = mid + 1; }
+            }
+
+            int step = sub / 4;
+            int frac = sub % 4;
+            if (step >= ramp_count - 1) { step = ramp_count - 1; frac = 0; }
+
+            int b = g_bayer[(cy + y) & 1][(cx + x) & 1];
+            int idx = (b < frac) ? step + 1 : step;
+            if (idx > ramp_count - 1) idx = ramp_count - 1;
+
+            gfxfb_put_pixel(cx + x, cy + y, (uint8_t)(ramp_start + idx));
+        }
+    }
 }
 
 void hal_gfx_drop_shadow(int x, int y, int w, int h, int radius, int depth) {

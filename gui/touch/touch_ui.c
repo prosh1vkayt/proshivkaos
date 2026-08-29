@@ -84,6 +84,18 @@ void touch_ui_set_text_scale(int scale) {
     relayout_current_app();   /* терминал пересчитает ширину строки */
 }
 
+static int str_same(const char *a, const char *b) {
+    while (*a && *b) { if (*a != *b) return 0; a++; b++; }
+    return *a == *b;
+}
+
+static void launch_app(int index);
+
+void touch_ui_open(const char *app_name) {
+    for (int i = 0; i < APP_COUNT; i++)
+        if (str_same(g_apps[i]->name, app_name)) { launch_app(i); return; }
+}
+
 void touch_ui_go_home(void) {
     g_screen = SCREEN_HOME;
     osk_set_visible(0);

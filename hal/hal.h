@@ -13,6 +13,10 @@
 #include <stdint.h>   /* freestanding header, идёт с компилятором, не с libc */
 #include <stddef.h>   /* size_t — тоже freestanding */
 
+/* Версия системы. Одна строка на весь проект: её показывают и neofetch в
+ * терминале, и экран "о системе". */
+#define PROSHIVKAOS_VERSION "0.3.0"
+
 /* ---------------- Консоль ---------------- */
 void hal_console_init(void);
 void hal_console_putc(char c);
@@ -58,6 +62,12 @@ void hal_arch_init(void);
  * "О системе". Единственный способ узнать архитектуру выше HAL, не
  * заводя #ifdef в прикладном коде. */
 const char *hal_arch_name(void);
+
+/* Модель процессора человекочитаемо. На ARM64 разбирается регистр MIDR_EL1
+ * (производитель + номер ядра), на x86 читается строка производителя через
+ * CPUID. Нужно экрану "о системе" — и заодно это первое, что хочешь
+ * увидеть, запустив систему на незнакомом железе. */
+const char *hal_cpu_name(void);
 
 void hal_panic(const char *msg) __attribute__((noreturn));
 void hal_cpu_halt(void);          /* остановить CPU до след. прерывания (cli+hlt / wfi) */

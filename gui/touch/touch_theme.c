@@ -94,6 +94,60 @@ void touch_draw_app_icon(int x, int y, int size, const char *glyph,
     }
 }
 
+void touch_draw_segment_bar(int x, int y, int w, int h,
+                             const uint8_t *colors, const int *weights,
+                             int count, int total_weight, uint8_t track) {
+    if (total_weight <= 0) return;
+
+    int r = h / 2;                     /* полоса-«пилюля» */
+    hal_gfx_fill_rounded_rect(x, y, w, h, track, r);
+
+    int drawn = 0;
+    for (int i = 0; i < count; i++) {
+        int seg_w = (int)(((long)w * weights[i]) / total_weight);
+
+        for (int j = 0; j < h; j++) {
+            for (int k = 0; k < seg_w; k++) {
+                int px = drawn + k;
+                if (px >= w) break;
+                /* Рисуем строго внутри скруглённой дорожки, иначе цветные
+                   углы торчали бы за её пределы. */
+                if (!hal_gfx_in_rounded_rect(px, j, w, h, r)) continue;
+                hal_gfx_put_pixel(x + px, y + j, colors[i]);
+            }
+        }
+        drawn += seg_w;
+        if (drawn >= w) break;
+    }
+}
+
+void touch_header_back_rect(int x, int y, int *bx, int *by, int *bw, int *bh) {
+    *bx = x;
+    *by = y;
+    *bw = TM.touch;
+    *bh = TM.touch;
+}
+
+int touch_draw_screen_header(int x, int y, int w, const char *title) {
+    int h = TM.touch;
+
+    /* Стрелка "назад" — нарисована примитивами: она узнаётся мгновенно,
+       а буква "<" в моноширинном шрифте выглядит как знак меньше. */
+    int cx = x + h / 2;
+    int cy = y + h / 2;
+    int a  = h / 5;
+    for (int i = 0; i <= a; i++) {
+        hal_gfx_fill_rect(cx - a / 2 + i, cy - i, 2, 2, GFX_UI_TEXT);
+        hal_gfx_fill_rect(cx - a / 2 + i, cy + i, 2, 2, GFX_UI_TEXT);
+    }
+    hal_gfx_fill_rect(cx - a / 2, cy, a * 2, 2, GFX_UI_TEXT);
+
+    hal_gfx_draw_string_scaled(x + h + TM.pad, y + (h - FONT_H * TM.scale) / 2,
+                                title, GFX_UI_TEXT_BRIGHT, TM.scale);
+    (void)w;
+    return h;
+}
+
 void touch_draw_switch(int x, int y, int w, int h, int on) {
     uint8_t track = on ? GFX_UI_ACCENT_DARK : GFX_UI_DIVIDER;
     hal_gfx_fill_rounded_rect(x, y, w, h, track, h / 2);
