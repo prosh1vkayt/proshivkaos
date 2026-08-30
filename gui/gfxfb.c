@@ -72,6 +72,23 @@ void gfxfb_present(void) {
             const uint8_t *src = &g_backbuffer[(long)y * g_width];
             for (int x = 0; x < g_width; x++) dst[x] = src[x];
         }
+    } else if (g_format == GFXFB_FMT_RGB24) {
+        /* Три байта на пиксель, без выравнивающего байта — именно так
+           лежит непрерывный сплеш-фреймбуфер, который оставляет LK на
+           Xiaomi-телефонах (см. arch/arm64/boards/mido.h). Запись идёт
+           байт за байтом: 32-битная запись через границу пикселя задела
+           бы соседний, а такой доступ на некоторых контроллерах DDR ещё
+           и попросту не гарантирован. */
+        for (int y = 0; y < g_height; y++) {
+            volatile uint8_t *dst = g_fb + (long)y * g_pitch;
+            const uint8_t *src = &g_backbuffer[(long)y * g_width];
+            for (int x = 0; x < g_width; x++) {
+                uint32_t rgb = g_palette_xrgb[src[x]];
+                dst[x * 3 + 0] = (uint8_t)(rgb >> 16);   /* R */
+                dst[x * 3 + 1] = (uint8_t)(rgb >> 8);    /* G */
+                dst[x * 3 + 2] = (uint8_t)(rgb);         /* B */
+            }
+        }
     } else {
         /* Аппаратной палитры нет — раскрашиваем сами по таблице. */
         for (int y = 0; y < g_height; y++) {

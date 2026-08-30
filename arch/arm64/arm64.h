@@ -48,12 +48,16 @@ static inline uint64_t bswap64(uint64_t v) {
     return ((uint64_t)bswap32((uint32_t)v) << 32) | bswap32((uint32_t)(v >> 32));
 }
 
-/* ---------------- UART (PL011) ---------------- */
+/* ---------------- Последовательный порт ----------------
+ * Диспетчер в arch/arm64/uart.c: какой контроллер за этими функциями —
+ * PL011 или Qualcomm UARTDM — выясняется во время выполнения по device
+ * tree. Вызывающий код разницы не видит. */
 void uart_init(void);
 void uart_putc(char c);
 void uart_write(const char *s);
 int  uart_getc(void);            /* -1, если нечего читать */
 void uart_write_hex(uint64_t v); /* отладочный вывод — до появления GUI */
+void uart_report_platform(void); /* что удалось выяснить про железо */
 
 /* ---------------- MMU и кэши ---------------- */
 /* Без MMU все обращения к ОЗУ трактуются как Device-nGnRnE (некэшируемые),
@@ -96,5 +100,7 @@ int  virtio_input_poll(vinput_event_t *ev);
 /* Диапазон абсолютных координат тачскрина (для масштабирования в пиксели).
  * 0, если абсолютного устройства не нашлось. */
 int  virtio_input_abs_range(int *max_x, int *max_y);
+/* Сколько устройств ввода удалось поднять. На реальном телефоне ноль. */
+int  virtio_input_device_count(void);
 
 #endif

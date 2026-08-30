@@ -1,66 +1,48 @@
-/* arch/arm64/uart.c — драйвер PL011 UART, прямой аналог arch/x86/vga.c.
+/* arch/arm64/uart.c — диспетчер последовательного порта.
  *
- * На x86 "консоль" — это запись символов в видеопамять 0xB8000. На ARM64
- * никакой текстовой видеопамяти не существует в природе: единственный
- * способ что-то напечатать до того, как заработает графика, — послать
- * байт в последовательный порт. У QEMU virt (и у подавляющего большинства
- * ARM-плат) это контроллер ARM PL011, у Qualcomm-телефонов — свой GENI/
- * MSM UART, но интерфейс наружу (uart_putc/uart_getc) от этого не меняется.
+ * Наружу (в hal_console_arm64.c, hal_input_arm64.c и отладочный вывод
+ * драйверов) торчат только функции uart_*. Какой именно контроллер за ними
+ * стоит, решается ВО ВРЕМЯ ВЫПОЛНЕНИЯ по device tree: PL011 у QEMU и
+ * большинства плат, UARTDM у телефонов на Snapdragon.
  *
- * Регистры опрашиваются, прерывания не используются — ровно как в
- * arch/x86/keyboard.c на первом этапе.
+ * Почему во время выполнения, а не через #ifdef при сборке. Так один и тот
+ * же образ грузится и в эмуляторе, и на телефоне — а значит, отлаживать
+ * логику можно там, где есть отладчик и мгновенная пересборка, и только
+ * потом нести на устройство. Разница в стоимости ошибки огромная: в QEMU
+ * неверный адрес это перезапуск, на телефоне — поездка в сервис.
  */
 #include "arm64.h"
+#include "platform.h"
 
-/* Смещения регистров PL011 (ARM DDI 0183) */
-#define UART_DR     0x00    /* данные (чтение = приём, запись = передача) */
-#define UART_FR     0x18    /* флаги                                       */
-#define UART_IBRD   0x24    /* делитель скорости, целая часть              */
-#define UART_FBRD   0x28    /* делитель скорости, дробная часть            */
-#define UART_LCR_H  0x2C    /* формат кадра                                */
-#define UART_CR     0x30    /* управление                                  */
-#define UART_IMSC   0x38    /* маска прерываний                            */
-#define UART_ICR    0x44    /* сброс прерываний                            */
+/* Реализации: arch/arm64/uart_pl011.c и arch/arm64/uart_msm.c */
+void pl011_init(uint64_t base);
+void pl011_putc(char c);
+int  pl011_getc(void);
 
-#define FR_RXFE     (1 << 4)   /* приёмный FIFO пуст     */
-#define FR_TXFF     (1 << 5)   /* передающий FIFO полон  */
+void msm_uart_init(uint64_t base);
+void msm_uart_putc(char c);
+int  msm_uart_getc(void);
 
-/* Базовый адрес вынесен в переменную, а не в #define: на реальном
- * устройстве он берётся из device tree, и тогда достаточно будет вызвать
- * uart_set_base() до uart_init(), не пересобирая всё остальное. */
-static uint64_t g_uart_base = VIRT_UART0_BASE;
-
-void uart_set_base(uint64_t base) {
-    g_uart_base = base;
-}
+static int g_kind = UART_KIND_NONE;
 
 void uart_init(void) {
-    mmio_write32(g_uart_base + UART_CR, 0);          /* выключить на время настройки */
+    const platform_info_t *pi = platform();
 
-    /* 115200 бод при UARTCLK 24 МГц: делитель = 24e6 / (16 * 115200) =
-       13.02 -> IBRD = 13, FBRD = round(0.02 * 64) = 1. QEMU скорость не
-       эмулирует и эти регистры игнорирует, но на реальном железе без них
-       из порта посыплется мусор. */
-    mmio_write32(g_uart_base + UART_IBRD, 13);
-    mmio_write32(g_uart_base + UART_FBRD, 1);
+    g_kind = pi->uart_kind;
 
-    /* 8 бит данных, без чётности, 1 стоп-бит, FIFO включены */
-    mmio_write32(g_uart_base + UART_LCR_H, (3 << 5) | (1 << 4));
-
-    mmio_write32(g_uart_base + UART_IMSC, 0);        /* все прерывания замаскированы */
-    mmio_write32(g_uart_base + UART_ICR, 0x7FF);     /* сбросить висящие флаги       */
-
-    /* UARTEN | TXE | RXE */
-    mmio_write32(g_uart_base + UART_CR, (1 << 0) | (1 << 8) | (1 << 9));
+    switch (g_kind) {
+        case UART_KIND_PL011: pl011_init(pi->uart_base);    break;
+        case UART_KIND_MSM:   msm_uart_init(pi->uart_base); break;
+        default: break;   /* порта нет — вывод молча уходит в никуда */
+    }
 }
 
 void uart_putc(char c) {
-    /* Терминалы ждут CR+LF, ядро печатает только LF — дописываем сами,
-       иначе вывод "лесенкой" уезжает вправо. */
-    if (c == '\n') uart_putc('\r');
-
-    while (mmio_read32(g_uart_base + UART_FR) & FR_TXFF) { }
-    mmio_write32(g_uart_base + UART_DR, (uint32_t)(unsigned char)c);
+    switch (g_kind) {
+        case UART_KIND_PL011: pl011_putc(c);    break;
+        case UART_KIND_MSM:   msm_uart_putc(c); break;
+        default: break;
+    }
 }
 
 void uart_write(const char *s) {
@@ -68,9 +50,11 @@ void uart_write(const char *s) {
 }
 
 int uart_getc(void) {
-    if (mmio_read32(g_uart_base + UART_FR) & FR_RXFE)
-        return -1;                                   /* приёмник пуст */
-    return (int)(mmio_read32(g_uart_base + UART_DR) & 0xFF);
+    switch (g_kind) {
+        case UART_KIND_PL011: return pl011_getc();
+        case UART_KIND_MSM:   return msm_uart_getc();
+        default: return -1;
+    }
 }
 
 void uart_write_hex(uint64_t v) {
@@ -78,4 +62,47 @@ void uart_write_hex(uint64_t v) {
     uart_write("0x");
     for (int shift = 60; shift >= 0; shift -= 4)
         uart_putc(digits[(v >> shift) & 0xF]);
+}
+
+/* Отчёт о том, что удалось выяснить про железо. Печатается один раз при
+ * старте — и это первое, на что смотришь, когда система не подаёт признаков
+ * жизни на новом устройстве: видно, разобрано ли дерево, найден ли порт и
+ * откуда взялся его адрес. */
+void uart_report_platform(void) {
+    const platform_info_t *pi = platform();
+
+    uart_write("\nproshivkaOS NEXT\n");
+    uart_write("  plata     : ");
+    uart_write(pi->model ? pi->model : "(neizvestno)");
+    uart_putc('\n');
+
+    uart_write("  devicetree: ");
+    uart_write(pi->fdt_ok ? "razobrano\n" : "NET (rabotaem po konstantam platy)\n");
+
+    uart_write("  uart      : ");
+    switch (pi->uart_kind) {
+        case UART_KIND_PL011: uart_write("PL011 ");  break;
+        case UART_KIND_MSM:   uart_write("UARTDM "); break;
+        default:              uart_write("NE NAYDEN "); break;
+    }
+    uart_write_hex(pi->uart_base);
+    uart_write(pi->uart_from_fdt ? " (iz dt)\n" : " (konstanta platy)\n");
+
+    uart_write("  gic       : ");
+    if (pi->gic_base) { uart_write_hex(pi->gic_base); uart_write(" (poka ne ispolzuetsya)\n"); }
+    else               uart_write("ne nayden\n");
+
+    uart_write("  ekran     : ");
+    if (pi->fb_valid) {
+        uart_write_hex(pi->fb_addr);
+        uart_write(" ");
+        /* Размеры печатаем шестнадцатерично — своей функции для десятичного
+           вывода в этом слое нет, а тащить её сюда ради отладки незачем. */
+        uart_write_hex((uint64_t)pi->fb_width);
+        uart_write("x");
+        uart_write_hex((uint64_t)pi->fb_height);
+        uart_write(pi->fb_format == 2 ? " r8g8b8\n" : " x8r8g8b8\n");
+    } else {
+        uart_write("gotovogo net, probuem ramfb\n");
+    }
 }

@@ -9,9 +9,8 @@ void gui_main(void);     /* gui/wm.c — не возвращается */
 
 void kmain(uint32_t multiboot_magic, void *multiboot_info) {
     (void)multiboot_magic;
-    (void)multiboot_info;
 
-    hal_arch_init();
+    hal_arch_init(multiboot_info);
     hal_mem_init();
     ramfs_init();
 

@@ -106,9 +106,15 @@ else ifeq ($(ARCH),arm64)
   # Параметры упаковки в Android boot.img (fastboot). Значения по умолчанию —
   # типовые для Qualcomm; под конкретный аппарат берутся из его исходников
   # ядра или из распакованного стокового boot.img.
+  # Значения по умолчанию совпадают с заводскими для Redmi Note 4 (mido) —
+  # они сняты с его стокового boot.img, а не взяты из общих рекомендаций.
+  # Для другого аппарата их надо переопределить: самый надёжный способ
+  # узнать свои — распаковать стоковый образ (magiskboot unpack boot.img).
   BOOTIMG_BASE      ?= 0x80000000
   BOOTIMG_PAGESIZE  ?= 2048
-  BOOTIMG_CMDLINE   ?= console=ttyMSM0,115200n8
+  # Своя командная строка ядру не нужна: адреса берутся из device tree, а
+  # не из cmdline. Оставляем пустой, чтобы ничего не обещать загрузчику.
+  BOOTIMG_CMDLINE   ?=
 
 else
   $(error Неизвестная ARCH=$(ARCH). Допустимо: x86, arm64)
@@ -119,10 +125,26 @@ endif
 # на x86 — VBE (интерфейс Bochs умеет произвольные разрешения, не только
 # каноничные 640x480/800x600, поэтому портрет там тоже доступен).
 # Верхняя граница — GFXFB_MAX_PIXELS (720x1440), см. gui/gfxfb.h.
+# Игнорируется, если BOARD задаёт готовый фреймбуфер загрузчика (mido) —
+# там разрешение диктует само железо, см. arch/arm64/boards/mido.h.
 SCREEN_W ?= 480
 SCREEN_H ?= 960
 
-BUILD  := build/$(ARCH)
+# Конкретная плата (имеет смысл только для ARCH=arm64). По умолчанию —
+# эмулятор (arch/arm64/boards/qemu.h). BOARD=mido подключает
+# arch/arm64/boards/mido.h: адреса реального Xiaomi Redmi Note 4/4X,
+# взятые из мейнлайн device tree ядра Linux. См. docs/PORT_MIDO.md — там
+# же честно перечислено, что уже проверено на бумаге, а что нет.
+BOARD ?= qemu
+ifeq ($(ARCH),arm64)
+  ifeq ($(BOARD),mido)
+    ARCH_CFLAGS += -DBOARD_MIDO
+  else ifneq ($(BOARD),qemu)
+    $(error Неизвестная BOARD=$(BOARD). Допустимо: qemu, mido)
+  endif
+endif
+
+BUILD  := build/$(ARCH)-$(BOARD)
 OBJDIR := $(BUILD)/obj
 
 # libgcc — вспомогательные функции самого компилятора. Своей libc у нас нет
@@ -184,7 +206,11 @@ else
 
   ARCH_BASE_SOURCES := \
       arch/arm64/cpu.c \
+      arch/arm64/fdt.c \
+      arch/arm64/platform.c \
       arch/arm64/uart.c \
+      arch/arm64/uart_pl011.c \
+      arch/arm64/uart_msm.c \
       arch/arm64/mmu.c \
       arch/arm64/timer.c
 
@@ -231,7 +257,7 @@ TOUCH_SOURCES := $(CORE_SOURCES) $(GFX_COMMON_SOURCES) $(ARCH_BASE_SOURCES) \
 # ============================================================================
 #  Преобразование списков исходников в объектные файлы
 # ============================================================================
-# Объектники складываются в build/$(ARCH)/obj/, а не рядом с исходниками:
+# Объектники складываются в build/$(ARCH)-$(BOARD)/obj/, а не рядом с исходниками:
 # иначе .o от x86-сборки и от arm64-сборки перезаписывали бы друг друга,
 # и "make ARCH=arm64" после "make" собирал бы франкенштейна.
 obj_of = $(patsubst %.c,$(OBJDIR)/%.o,$(patsubst %.asm,$(OBJDIR)/%.o,$(patsubst %.S,$(OBJDIR)/%.o,$(1))))
@@ -251,7 +277,7 @@ RAW_IMAGE   := $(BUILD)/proshivkaos.img
 BOOT_IMG    := $(BUILD)/proshivkaos_boot.img
 ISO         := $(BUILD)/proshivkaos.iso
 
-.PHONY: all text gui touch clean run gui-run touch-run iso image bootimg help
+.PHONY: all text gui touch clean run gui-run touch-run iso image bootimg help mido
 
 all: text
 
@@ -306,6 +332,16 @@ ifneq ($(ARCH),arm64)
 endif
 	$(OBJCOPY) -O binary $(TOUCH_ELF) $(RAW_IMAGE)
 	@echo "собрано: $(RAW_IMAGE) ($$(wc -c < $(RAW_IMAGE)) байт)"
+
+# Всё, что нужно для Redmi Note 4/4X, одной командой. Отдельная цель — не
+# синтаксический сахар: под mido меняется и BOARD (константы платы), и
+# каталог сборки, и путь к образу, и перепутать их между запусками легко.
+mido:
+	$(MAKE) ARCH=arm64 BOARD=mido bootimg
+	@echo
+	@echo "Готово: build/arm64-mido/proshivkaos_boot.img"
+	@echo "Проверка БЕЗ записи в память устройства:"
+	@echo "    fastboot boot build/arm64-mido/proshivkaos_boot.img"
 
 # Android boot.img — то, что принимает fastboot. Собственный упаковщик в
 # tools/mkbootimg.py: формат заголовка v0 простой, а тащить ради него
@@ -397,6 +433,7 @@ help:
 	@echo "  make [ARCH=...] touch-run      запустить тач-интерфейс в QEMU"
 	@echo "  make ARCH=arm64 image          сырой ARM64 Image для загрузчика"
 	@echo "  make ARCH=arm64 bootimg        Android boot.img для fastboot"
+	@echo "  make mido                      образ для Redmi Note 4/4X одной командой"
 	@echo "  make clean                     удалить build/"
 	@echo ""
 	@echo "  Разрешение тач-сборки: make ARCH=arm64 touch SCREEN_W=720 SCREEN_H=1440"

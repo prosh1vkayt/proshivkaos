@@ -303,6 +303,8 @@ void virtio_input_init(void) {
         uart_write("virtio-input: ustroystv vvoda ne naydeno\n");
 }
 
+int virtio_input_device_count(void) { return g_device_count; }
+
 int virtio_input_abs_range(int *max_x, int *max_y) {
     if (g_abs_device < 0) return 0;
     *max_x = g_devices[g_abs_device].abs_max_x;

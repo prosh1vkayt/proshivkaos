@@ -65,8 +65,11 @@ static void push(int type, int x, int y, int pressed, int key) {
     g_head = next;
 }
 
+static int g_device_count = 0;
+
 void hal_input_init(void) {
     virtio_input_init();
+    g_device_count = virtio_input_device_count();
 
     int mx, my;
     if (virtio_input_abs_range(&mx, &my)) {
@@ -92,6 +95,10 @@ void hal_input_set_screen(int w, int h) {
  * незачем. Если абсолютного устройства не нашлось (значит, работаем с
  * относительной мышью), курсор всё-таки нужен. */
 int hal_input_has_cursor(void) { return !g_has_abs; }
+
+/* На реальном телефоне virtio-устройств нет (они существуют только внутри
+ * QEMU), а драйвера тачскрина по I2C ещё нет — значит, ввода нет вовсе. */
+int hal_input_available(void) { return g_device_count > 0; }
 
 void hal_input_pointer_pos(int *x, int *y) {
     *x = g_x;

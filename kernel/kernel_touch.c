@@ -15,11 +15,12 @@ void touch_main(void);   /* gui/touch/touch_ui.c — не возвращаетс
 void kmain(uint32_t boot_magic, void *boot_info) {
     /* На x86 здесь лежит magic от Multiboot и указатель на multiboot_info,
        на ARM64 — ноль и указатель на device tree (см. arch/arm64/boot.S).
-       Ни то, ни другое на этом этапе не разбирается. */
+       Magic не проверяется, а вот boot_info уходит в hal_arch_init(): на
+       ARM64 из него вычитываются адреса порта, контроллера прерываний и
+       готового экрана. */
     (void)boot_magic;
-    (void)boot_info;
 
-    hal_arch_init();    /* ARM64: включить MMU и кэши. x86: пусто.       */
+    hal_arch_init(boot_info);    /* ARM64: включить MMU и кэши. x86: пусто.       */
     hal_time_init();    /* x86: откалибровать TSC по PIT                  */
     hal_mem_init();
     ramfs_init();

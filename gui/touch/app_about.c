@@ -45,7 +45,7 @@ static int header_h(void)  { return TM.touch; }
 static int hero_h(void)    { return TM.touch * 6; }
 static int mini_h(void)    { return TM.touch * 3; }
 static int row_h(void)     { return TM.touch * 5 / 4; }
-#define ROW_COUNT 7
+#define ROW_COUNT 8
 
 static int rows_card_h(void) { return TM.pad * 2 + ROW_COUNT * row_h(); }
 
@@ -215,6 +215,7 @@ static void draw_rows_card(int x, int y, int w, int h) {
     int i = 0;
     draw_row(x, ry, w, i++, "PROCESSOR",  hal_cpu_name());          ry += row_h();
     draw_row(x, ry, w, i++, "ARCH",        hal_arch_name());         ry += row_h();
+    draw_row(x, ry, w, i++, "BOARD",       hal_board_name());        ry += row_h();
     draw_row(x, ry, w, i++, "DISPLAY",     screen);                  ry += row_h();
     draw_row(x, ry, w, i++, "INPUT",       hal_input_has_cursor() ? "POINTER" : "TOUCHSCREEN");
     ry += row_h();

@@ -52,6 +52,9 @@ void hal_input_set_screen(int w, int h) {
 
 int hal_input_has_cursor(void) { return 1; }
 
+/* PS/2-контроллер на PC-совместимой машине есть всегда. */
+int hal_input_available(void) { return 1; }
+
 void hal_input_pointer_pos(int *x, int *y) {
     *x = g_x;
     *y = g_y;
