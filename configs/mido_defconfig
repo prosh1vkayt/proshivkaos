@@ -1,0 +1,22 @@
+# configs/mido_defconfig — Xiaomi Redmi Note 4/4X (mido), Snapdragon 625.
+#
+# Все адреса, которые эти драйверы используют как запасные, сняты с живого
+# устройства — см. arch/arm64/boards/mido.h. Основной источник адресов всё
+# равно device tree от загрузчика.
+CONFIG_BOARD_MIDO=y
+
+# Оба драйвера порта остаются в сборке: нужный выбирается во время
+# выполнения по compatible из дерева. На самом телефоне сработает UARTDM,
+# но тот же образ должен уметь подняться и в эмуляторе.
+CONFIG_UART_PL011=y
+CONFIG_UART_MSM=y
+
+# Экран: готовый фреймбуфер, оставленный загрузчиком после отрисовки
+# сплеша. Своего драйвера DSI у нас нет и не требуется.
+CONFIG_FB_FROM_BOOTLOADER=y
+
+# Тачскрин и всё, без чего он не работает.
+CONFIG_TOUCH_FT5X06=y
+CONFIG_I2C_QUP=y
+CONFIG_TLMM_GPIO=y
+CONFIG_CLK_GCC_MSM8953=y

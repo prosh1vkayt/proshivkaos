@@ -5,6 +5,11 @@
  * абсолютная точка приходит готовой, но её надо перевести из сетки
  * сенсора (обычно 0..32767) в пиксели экрана.
  *
+ * Третий источник — настоящий тачскрин телефона (FocalTech FT5x06 на шине
+ * I2C, см. arch/arm64/touch_ft5x06.c). Он подключается только в сборках под
+ * платы, где он есть; в остальных вместо него работают слабые заглушки
+ * ниже, и остальной код разницы не замечает.
+ *
  * Второй источник ввода — сам последовательный порт. Это не костыль, а
  * ровно то, как работают с телефоном на ранних этапах порта (и как это
  * описано в docs/ARM64_PLAN.md п.4): экранной клавиатуры может не быть,
@@ -15,6 +20,18 @@
 #include "arm64.h"
 
 int uart_getc(void);
+
+/* Слабые заглушки драйвера тачскрина. Их перекрывают настоящие функции из
+ * arch/arm64/touch_ft5x06.c, если он попал в сборку. Так слой ввода
+ * обходится без единого #ifdef по плате. */
+__attribute__((weak)) int  ft5x06_init(void)  { return 0; }
+__attribute__((weak)) int  ft5x06_ready(void) { return 0; }
+__attribute__((weak)) int  ft5x06_poll(int *x, int *y, int *pressed) {
+    (void)x; (void)y; (void)pressed; return 0;
+}
+__attribute__((weak)) void ft5x06_range(int *max_x, int *max_y) {
+    (void)max_x; (void)max_y;
+}
 
 /* Коды из linux/input-event-codes.h — virtio-input использует именно их,
  * ту же нумерацию, что и настоящий драйвер тачскрина в Linux. */
@@ -66,6 +83,7 @@ static void push(int type, int x, int y, int pressed, int key) {
 }
 
 static int g_device_count = 0;
+static int g_touch_ok = 0;      /* поднялся настоящий тачскрин телефона */
 
 void hal_input_init(void) {
     virtio_input_init();
@@ -76,6 +94,17 @@ void hal_input_init(void) {
         g_abs_max_x = mx;
         g_abs_max_y = my;
         g_has_abs = 1;
+    }
+
+    /* Настоящий тачскрин пробуем поднять только если virtio ничего не дал.
+       Под эмулятором virtio есть всегда, и лезть на несуществующую шину
+       I2C незачем; на телефоне всё ровно наоборот. */
+    if (g_device_count == 0) {
+        g_touch_ok = ft5x06_init();
+        if (g_touch_ok) {
+            ft5x06_range(&g_abs_max_x, &g_abs_max_y);
+            g_has_abs = 1;
+        }
     }
 
     g_head = g_tail = 0;
@@ -98,7 +127,7 @@ int hal_input_has_cursor(void) { return !g_has_abs; }
 
 /* На реальном телефоне virtio-устройств нет (они существуют только внутри
  * QEMU), а драйвера тачскрина по I2C ещё нет — значит, ввода нет вовсе. */
-int hal_input_available(void) { return g_device_count > 0; }
+int hal_input_available(void) { return g_device_count > 0 || g_touch_ok; }
 
 void hal_input_pointer_pos(int *x, int *y) {
     *x = g_x;
@@ -136,6 +165,24 @@ static void flush_pointer_frame(void) {
 }
 
 static void pump_hardware(void) {
+    /* --- Настоящий тачскрин телефона --- */
+    if (g_touch_ok) {
+        int tx, ty, tp;
+        if (ft5x06_poll(&tx, &ty, &tp)) {
+            /* Контроллер отдаёт координаты сразу в пикселях панели, но
+               экран мог оказаться другого размера (например, загрузчик
+               оставил фреймбуфер меньше панели) — поэтому масштабируем
+               через тот же путь, что и абсолютные координаты virtio. */
+            g_x = clamp((int)(((int64_t)tx * (g_screen_w - 1)) / g_abs_max_x),
+                        0, g_screen_w - 1);
+            g_y = clamp((int)(((int64_t)ty * (g_screen_h - 1)) / g_abs_max_y),
+                        0, g_screen_h - 1);
+            g_pending_pressed = tp;
+            g_dirty = 1;
+            flush_pointer_frame();
+        }
+    }
+
     /* --- Клавиши из последовательного порта --- */
     int c = uart_getc();
     if (c >= 0) {

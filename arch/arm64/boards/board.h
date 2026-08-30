@@ -19,7 +19,7 @@
 /* Ради имён UART_KIND_* — платы объявляют, какой у них контроллер порта. */
 #include "../platform.h"
 
-#if defined(BOARD_MIDO)
+#if defined(CONFIG_BOARD_MIDO)
     #include "mido.h"
 #else
     #include "qemu.h"

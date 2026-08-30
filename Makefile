@@ -98,9 +98,17 @@ else ifeq ($(ARCH),arm64)
   # -mstrict-align: не генерировать невыровненные обращения к памяти.
   #   До включения MMU вся память трактуется как Device-nGnRnE, где
   #   невыровненный доступ — гарантированный abort.
-  ARCH_CFLAGS   := -mgeneral-regs-only -mstrict-align -fno-common
+  # -fpie + -pie: образ собирается позиционно-независимым. Загрузчик
+  # телефона кладёт ядро не по тому адресу, на который оно слинковано, и без
+  # этого все указатели, зашитые компоновщиком в данные, оказываются
+  # недействительны. Компоновщик складывает их список в .rela.dyn, а
+  # arch/arm64/boot.S проходит его на старте и правит.
+  # -fvisibility=hidden убирает лишнюю косвенность через GOT: все символы
+  # свои, экспортировать наружу нечего.
+  ARCH_CFLAGS   := -mgeneral-regs-only -mstrict-align -fno-common \
+                   -fpie -fvisibility=hidden
   LINKER_SCRIPT := arch/arm64/linker.ld
-  LDFLAGS       := -T $(LINKER_SCRIPT) -nostdlib
+  LDFLAGS       := -T $(LINKER_SCRIPT) -nostdlib -pie --no-dynamic-linker -z notext
   QEMU          := qemu-system-aarch64
 
   # Параметры упаковки в Android boot.img (fastboot). Значения по умолчанию —
@@ -136,13 +144,29 @@ SCREEN_H ?= 960
 # взятые из мейнлайн device tree ядра Linux. См. docs/PORT_MIDO.md — там
 # же честно перечислено, что уже проверено на бумаге, а что нет.
 BOARD ?= qemu
+
+# --- Конфигурация платы ------------------------------------------------
+# Набор включённых возможностей лежит в configs/<плата>_defconfig, а их
+# перечень с зависимостями описан в Kconfig (формат ядра Linux — если
+# проект дорастёт до menuconfig, он заработает как есть).
+#
+# Каждая строка вида CONFIG_X=y превращается в макрос -DCONFIG_X и заодно
+# решает, какие .c-файлы попадут в сборку. Держать одно в двух местах
+# (список файлов в Makefile и #ifdef в коде) не пришлось: и то и другое
+# выводится из одного файла.
+BOARD_CONFIG := configs/$(BOARD)_defconfig
+
 ifeq ($(ARCH),arm64)
-  ifeq ($(BOARD),mido)
-    ARCH_CFLAGS += -DBOARD_MIDO
-  else ifneq ($(BOARD),qemu)
-    $(error Неизвестная BOARD=$(BOARD). Допустимо: qemu, mido)
+  ifeq ($(wildcard $(BOARD_CONFIG)),)
+    $(error Нет конфигурации для BOARD=$(BOARD). Ожидался файл $(BOARD_CONFIG))
   endif
+
+  BOARD_CONFIGS := $(shell sed -n 's/^\(CONFIG_[A-Z0-9_]*\)=y$$/\1/p' $(BOARD_CONFIG))
+  ARCH_CFLAGS   += $(addprefix -D,$(BOARD_CONFIGS))
 endif
+
+# Включена ли возможность: $(call cfg,TOUCH_FT5X06)
+cfg = $(filter CONFIG_$(1),$(BOARD_CONFIGS))
 
 BUILD  := build/$(ARCH)-$(BOARD)
 OBJDIR := $(BUILD)/obj
@@ -224,6 +248,22 @@ else
       arch/arm64/fwcfg.c arch/arm64/ramfb.c arch/arm64/hal_gfx_arm64.c
   ARCH_INPUT_SOURCES := \
       arch/arm64/virtio_input.c hal/hal_input_arm64.c
+
+  # Драйверы реального телефона подключаются только там, где они есть.
+  # В сборке под эмулятор их нет вовсе — вместо них работают слабые
+  # заглушки в hal/hal_input_arm64.c, и слой ввода разницы не замечает.
+  ifneq ($(call cfg,TLMM_GPIO),)
+    ARCH_INPUT_SOURCES += arch/arm64/tlmm.c
+  endif
+  ifneq ($(call cfg,CLK_GCC_MSM8953),)
+    ARCH_INPUT_SOURCES += arch/arm64/gcc_msm8953.c
+  endif
+  ifneq ($(call cfg,I2C_QUP),)
+    ARCH_INPUT_SOURCES += arch/arm64/i2c_qup.c
+  endif
+  ifneq ($(call cfg,TOUCH_FT5X06),)
+    ARCH_INPUT_SOURCES += arch/arm64/touch_ft5x06.c
+  endif
 
   BOOT_ASM :=
   BOOT_S   := arch/arm64/boot.S arch/arm64/vectors.S

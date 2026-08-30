@@ -1,0 +1,11 @@
+# configs/qemu_defconfig — виртуальная машина qemu-system-aarch64 -M virt.
+#
+# Всё железо здесь принадлежит гипервизору: экран через ramfb, ввод через
+# virtio-input, порт PL011. Драйверов реального телефона в сборке нет —
+# лезть по их адресам в эмуляторе не к чему.
+CONFIG_BOARD_QEMU=y
+
+CONFIG_UART_PL011=y
+CONFIG_UART_MSM=y
+
+CONFIG_FB_RAMFB=y

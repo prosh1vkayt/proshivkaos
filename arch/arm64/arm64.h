@@ -86,6 +86,36 @@ int  fwcfg_dma_write(uint16_t select, const void *data, uint32_t len);
  * 1 = успех; 0, если ramfb не подключён (нет -device ramfb). */
 int  ramfb_setup(void *framebuffer, int width, int height);
 
+/* ---------------- Тактирование (Qualcomm GCC) ----------------
+ * Периферия на Snapdragon по умолчанию обесточена по тактам. Порт UART
+ * достался нам уже включённым от загрузчика, а шину I2C тачскрина
+ * приходится поднимать самим. */
+int  gcc_enable_blsp1_qup_i2c(int qup_index);
+
+/* ---------------- Выводы общего назначения (Qualcomm TLMM) ---------------- */
+void tlmm_gpio_output(int gpio, int value);
+void tlmm_gpio_input(int gpio, int pull_up);
+void tlmm_gpio_set(int gpio, int value);
+int  tlmm_gpio_get(int gpio);
+
+/* ---------------- Ведущий I2C (Qualcomm QUP v2) ---------------- */
+int  i2c_qup_init(uint64_t base, uint32_t core_hz, uint32_t bus_hz);
+/* Записать wlen байт, затем через ПОВТОРНЫЙ СТАРТ прочитать rlen.
+ * Любую из частей можно опустить, передав нулевую длину. */
+int  i2c_qup_xfer(uint64_t base, uint8_t addr,
+                   const uint8_t *wbuf, int wlen, uint8_t *rbuf, int rlen);
+int  i2c_qup_write_reg(uint64_t base, uint8_t addr, uint8_t reg, uint8_t value);
+int  i2c_qup_read_regs(uint64_t base, uint8_t addr, uint8_t reg, uint8_t *out, int len);
+
+/* ---------------- Тачскрин FocalTech FT5x06 / FT5435 ----------------
+ * Собирается только для плат, у которых он есть (см. Makefile, BOARD).
+ * На прочих сборках вместо этих функций подставляются слабые заглушки в
+ * hal/hal_input_arm64.c, и слой ввода про разницу не знает. */
+int  ft5x06_init(void);
+int  ft5x06_ready(void);
+int  ft5x06_poll(int *x, int *y, int *pressed);
+void ft5x06_range(int *max_x, int *max_y);
+
 /* ---------------- virtio-input (тач/клавиатура) ---------------- */
 void virtio_input_init(void);
 
