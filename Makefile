@@ -331,6 +331,8 @@ BOOT_IMG    := $(BUILD)/proshivkaos_boot.img
 BOARD_DTS   := arch/arm64/boards/$(BOARD).dts
 BOARD_DTB   := $(BUILD)/$(BOARD).dtb
 PACKED_KERN := $(BUILD)/Image.gz-dtb
+PACKED_RAW  := $(BUILD)/Image-dtb-uncompressed
+BOOT_IMG_RAW:= $(BUILD)/proshivkaos_boot_uncompressed.img
 ISO         := $(BUILD)/proshivkaos.iso
 
 .PHONY: all text gui touch clean run gui-run touch-run iso image bootimg help mido
@@ -405,6 +407,7 @@ endif
 # каталог сборки, и путь к образу, и перепутать их между запусками легко.
 mido:
 	$(MAKE) ARCH=arm64 BOARD=mido bootimg
+	$(MAKE) ARCH=arm64 BOARD=mido bootimg-raw
 	@echo
 	@echo "Готово: build/arm64-mido/proshivkaos_boot.img"
 	@echo "Проверка БЕЗ записи в память устройства:"
@@ -453,9 +456,45 @@ $(BOARD_DTB): $(BOARD_DTS)
 # кроме подмены ядра в стоковом boot.img через magiskboot: там дерево
 # доставалось от стокового ядра, а сжатие делал сам magiskboot.
 $(PACKED_KERN): image $(BOARD_DTB)
-	gzip -9 -c $(RAW_IMAGE) > $(BUILD)/Image.gz
+	gzip -n -9 -c $(RAW_IMAGE) > $(BUILD)/Image.gz
 	cat $(BUILD)/Image.gz $(BOARD_DTB) > $@
 	@echo "упаковано: $@ ($$(wc -c < $@) байт) = gzip(ядро) + дерево"
+
+# ЗАЧЕМ ЗДЕСЬ -n. Флаг запрещает gzip записывать в заголовок имя исходного
+# файла и время. Сборка ядра Linux ставит его по той же причине, по которой
+# он понадобился нам: имя файла удлиняет заголовок на свою длину, а
+# распаковщик загрузчика возвращает смещение конца потока — то самое, по
+# которому он потом ищет дерево. Разъехались на длину имени — и дерево
+# ищется мимо, с исходом "dtb not found" и отказом грузиться.
+#
+# Проверить легко: у стокового ядра Xiaomi заголовок начинается с
+# 1f 8b 08 00, у нашего до этой правки было 1f 8b 08 08 — бит FNAME.
+
+# ---------------------------------------------------------------------------
+# Запасной образ: то же ядро, но БЕЗ сжатия.
+#
+# Загрузчик умеет и такой формат, причём он надёжнее: смещение дерева не
+# вычисляется распаковщиком, а написано в образе явно. Признак формата —
+# метка "UNCOMPRESSED_IMG" в начале, следом 32-битное смещение дерева от
+# начала этой метки, а за 20-байтным заголовком идёт обычный ARM64 Image.
+# В коде загрузчика это PATCHED_KERNEL_MAGIC, ветка "Patched kernel
+# detected".
+#
+# Держим оба варианта: если сжатый почему-то не примут, этот проверяет ту
+# же систему по пути, где ошибиться просто негде.
+$(PACKED_RAW): image $(BOARD_DTB)
+	@python3 -c "import struct; \
+	k=open('$(RAW_IMAGE)','rb').read(); d=open('$(BOARD_DTB)','rb').read(); \
+	open('$@','wb').write(b'UNCOMPRESSED_IMG'+struct.pack('<I',20+len(k))+k+d)"
+	@echo "упаковано: $@ ($$(wc -c < $@) байт) = метка + ядро + дерево"
+
+bootimg-raw: $(PACKED_RAW)
+	python3 tools/mkbootimg.py \
+	    --kernel $(PACKED_RAW) \
+	    --base $(BOOTIMG_BASE) \
+	    --pagesize $(BOOTIMG_PAGESIZE) \
+	    --cmdline "$(BOOTIMG_CMDLINE)" \
+	    --output $(BOOT_IMG_RAW)
 
 # ============================================================================
 #  Запуск в QEMU
