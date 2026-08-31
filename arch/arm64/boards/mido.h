@@ -59,8 +59,26 @@
 #define BOARD_FB_ADDR    0x90001000UL
 #define BOARD_FB_WIDTH   1080
 #define BOARD_FB_HEIGHT  1920
-#define BOARD_FB_STRIDE  4352            /* байт на строку, из fb0/stride  */
-#define BOARD_FB_FORMAT  GFXFB_FMT_XRGB32
+#define BOARD_FB_STRIDE  3240            /* 1080 * 3: упаковано вплотную */
+#define BOARD_FB_FORMAT  GFXFB_FMT_RGB24
+
+/*
+ * ПОЧЕМУ ЗДЕСЬ 24 БИТА, А НЕ 32. Значения сняты с узла simple-framebuffer,
+ * который передаёт загрузчик lk2nd (/chosen/framebuffer@90001000 в живом
+ * дереве):
+ *
+ *     width = 1080, height = 1920, stride = 3240, format = "r8g8b8"
+ *     reg   = <0x90001000 0x5eec00>,  а 0x5eec00 = 1080 * 1920 * 3
+ *
+ * Размер области сходится с тремя байтами на пиксель до последнего байта —
+ * это и есть проверка, что формат прочитан верно.
+ *
+ * Раньше здесь стояло 4352 и 32 бита, взятые с /sys/class/graphics/fb0
+ * работавшего Android. Ошибки в том измерении не было: Android поднимает
+ * СВОЙ фреймбуфер через контроллер дисплея и выравнивает строку до 1088
+ * пикселей по четыре байта. Но это буфер драйвера Android, а не тот, что
+ * оставляет загрузчик, — а нам достаётся именно второй.
+ */
 
 /* ---------------- Тактирование (GCC) ----------------
  * Узел qcom,gcc@1800000, compatible "qcom,gcc-8953", размер 0x80000 —
@@ -135,9 +153,10 @@
  * ассемблер в arch/arm64/boot.S, а он их не понимает. Значения и так
  * помещаются в unsigned int, так что для C ничего не меняется.
  */
-#define BOARD_PSTORE_BASE          0x9FF00000
-#define BOARD_PSTORE_CONSOLE_OFF   0x77000
-#define BOARD_PSTORE_CONSOLE_ADDR  0x9FF77000
-#define BOARD_PSTORE_CONSOLE_SIZE  0x80000
+#define BOARD_PSTORE_BASE          0xBFE80000
+#define BOARD_PSTORE_SIZE          0x80000
+#define BOARD_PSTORE_CONSOLE_OFF   0x40000
+#define BOARD_PSTORE_CONSOLE_ADDR  0xBFEC0000
+#define BOARD_PSTORE_CONSOLE_SIZE  0x40000
 
 #endif

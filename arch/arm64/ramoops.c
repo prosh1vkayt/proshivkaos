@@ -55,6 +55,7 @@
  */
 #include "arm64.h"
 #include "boards/board.h"
+#include "fdt.h"
 
 #ifdef CONFIG_LOG_RAMOOPS
 
@@ -78,21 +79,86 @@ static void flush(const void *p, uint32_t len) {
     arch_dcache_clean(p, len);
 }
 
-void ramoops_init(void) {
-    g_base     = (volatile uint8_t *)BOARD_PSTORE_CONSOLE_ADDR;
+/* Найти область журнала в дереве устройств.
+ *
+ * Зашивать адрес в код нельзя: он задаётся дереву конкретной системы и
+ * между прошивками меняется. На этом же телефоне под Android область
+ * лежала по 0x9FF00000, а под mainline-ядром — по 0xBFE80000. Промах на
+ * этом месте не ломает ничего заметного, но делает всю затею бесполезной:
+ * мы пишем в одно место, система телефона ищет в другом.
+ *
+ * Зоны внутри области ядро раскладывает по порядку (fs/pstore/ram.c,
+ * ramoops_probe): сначала дампы паник, следом консоль, затем ftrace и
+ * pmsg. Нам нужна консоль, поэтому её начало — это размер области минус
+ * размеры всех зон, которые идут ПОСЛЕ дампов.
+ *
+ * Возвращает 0, если дерева нет или узла в нём не оказалось; тогда в ход
+ * идут константы платы. */
+static int ramoops_from_fdt(const void *dtb, uint64_t *addr, uint32_t *size) {
+    if (!fdt_init(dtb)) return 0;
+
+    fdt_node_t node;
+    if (!fdt_find_compatible("ramoops", &node)) return 0;
+
+    uint64_t base = 0, total = 0;
+    if (!fdt_reg(&node, 0, &base, &total) || !base || !total) return 0;
+
+    uint32_t console = 0, ftrace = 0, pmsg = 0;
+    if (!fdt_prop_u32(&node, "console-size", &console) || console == 0)
+        return 0;               /* без консольной зоны писать некуда */
+    fdt_prop_u32(&node, "ftrace-size", &ftrace);
+    fdt_prop_u32(&node, "pmsg-size", &pmsg);
+
+    /* Зоны обязаны помещаться в область — иначе дерево описывает не то,
+       что мы думаем, и лучше отступить к константам платы. */
+    uint64_t tail = (uint64_t)console + ftrace + pmsg;
+    if (tail >= total) return 0;
+
+    *addr = base + (total - tail);
+    *size = console;
+    return 1;
+}
+
+/* Перенести раннюю метку, поставленную в boot.S.
+ *
+ * boot.S пишет по константе времени сборки — до разбора дерева адрес взять
+ * неоткуда. Если дерево указало другое место, метка осталась бы лежать в
+ * стороне и потерялась. Переносим её, чтобы журнал остался цельным: строка
+ * про полученное управление ценнее всех последующих, потому что она одна
+ * доказывает, что загрузчик до нас доехал. */
+static uint32_t carry_over_early_mark(volatile uint8_t *dst_data, uint32_t capacity) {
+    const volatile uint8_t *src = (const volatile uint8_t *)BOARD_PSTORE_CONSOLE_ADDR;
+
+    if (*(const volatile uint32_t *)(src + 0) != PRAM_SIG) return 0;
+
+    uint32_t n = *(const volatile uint32_t *)(src + 8);
+    if (n == 0 || n > capacity) return 0;
+
+    for (uint32_t i = 0; i < n; i++)
+        dst_data[i] = src[PRAM_HDR_BYTES + i];
+    return n;
+}
+
+void ramoops_init(const void *dtb) {
+    uint64_t addr = BOARD_PSTORE_CONSOLE_ADDR;
+    uint32_t size = BOARD_PSTORE_CONSOLE_SIZE;
+
+    int from_fdt = ramoops_from_fdt(dtb, &addr, &size);
+
+    g_base     = (volatile uint8_t *)(uintptr_t)addr;
     g_data     = g_base + PRAM_HDR_BYTES;
-    g_capacity = BOARD_PSTORE_CONSOLE_SIZE - PRAM_HDR_BYTES;
+    g_capacity = size - PRAM_HDR_BYTES;
 
-    /* Метку из boot.S не затираем, а продолжаем с неё: она поставлена до
-       всего остального и говорит, что загрузчик до нас доехал. Признак —
-       уже проставленная сигнатура и осмысленная длина. */
-    uint32_t sig  = *(volatile uint32_t *)(g_base + 0);
-    uint32_t size = *(volatile uint32_t *)(g_base + 8);
-
-    if (sig == PRAM_SIG && size <= g_capacity)
-        g_used = size;
-    else
-        g_used = 0;
+    if (from_fdt && addr != (uint64_t)BOARD_PSTORE_CONSOLE_ADDR) {
+        /* Дерево увело нас в другое место — забираем метку с собой. */
+        g_used = carry_over_early_mark(g_data, g_capacity);
+    } else {
+        /* Пишем туда же, куда писал boot.S: продолжаем с его метки.
+           Признак — уже проставленная сигнатура и осмысленная длина. */
+        uint32_t sig  = *(volatile uint32_t *)(g_base + 0);
+        uint32_t used = *(volatile uint32_t *)(g_base + 8);
+        g_used = (sig == PRAM_SIG && used <= g_capacity) ? used : 0;
+    }
 
     hdr_write(0, PRAM_SIG);
     hdr_write(4, 0);          /* start: кольцо не проворачивалось */
@@ -100,6 +166,10 @@ void ramoops_init(void) {
 
     g_ready = 1;
     flush((const void *)g_base, PRAM_HDR_BYTES);
+    if (g_used) flush((const void *)g_data, g_used);
+
+    ramoops_write(from_fdt ? "[log] oblast zhurnala vzyata iz dereva\n"
+                           : "[log] oblast zhurnala: konstanta platy\n");
 }
 
 void ramoops_putc(char c) {

@@ -77,11 +77,11 @@ void arch_dcache_clean(const void *addr, size_t len);
  * прочитать из Android после неудачного старта. На платах без такой
  * области не собирается вовсе — см. CONFIG_LOG_RAMOOPS. */
 #ifdef CONFIG_LOG_RAMOOPS
-void ramoops_init(void);
+void ramoops_init(const void *dtb);
 void ramoops_putc(char c);
 void ramoops_write(const char *s);
 #else
-#define ramoops_init()    do { } while (0)
+#define ramoops_init(d)   do { (void)(d); } while (0)
 #define ramoops_putc(c)   do { (void)(c); } while (0)
 #define ramoops_write(s)  do { (void)(s); } while (0)
 #endif
