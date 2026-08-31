@@ -321,6 +321,9 @@ GUI_ELF     := $(BUILD)/kernel_gui.elf
 TOUCH_ELF   := $(BUILD)/kernel_touch.elf
 RAW_IMAGE   := $(BUILD)/proshivkaos.img
 BOOT_IMG    := $(BUILD)/proshivkaos_boot.img
+BOARD_DTS   := arch/arm64/boards/$(BOARD).dts
+BOARD_DTB   := $(BUILD)/$(BOARD).dtb
+PACKED_KERN := $(BUILD)/Image.gz-dtb
 ISO         := $(BUILD)/proshivkaos.iso
 
 .PHONY: all text gui touch clean run gui-run touch-run iso image bootimg help mido
@@ -392,13 +395,44 @@ mido:
 # Android boot.img — то, что принимает fastboot. Собственный упаковщик в
 # tools/mkbootimg.py: формат заголовка v0 простой, а тащить ради него
 # зависимость из AOSP незачем.
-bootimg: image
+bootimg: $(PACKED_KERN)
 	python3 tools/mkbootimg.py \
-	    --kernel $(RAW_IMAGE) \
+	    --kernel $(PACKED_KERN) \
 	    --base $(BOOTIMG_BASE) \
 	    --pagesize $(BOOTIMG_PAGESIZE) \
 	    --cmdline "$(BOOTIMG_CMDLINE)" \
 	    --output $(BOOT_IMG)
+
+# Дерево устройств платы.
+$(BOARD_DTB): $(BOARD_DTS)
+	@mkdir -p $(dir $@)
+	dtc -I dts -O dtb -o $@ $<
+
+# Ядро в том виде, в каком его принимает загрузчик телефона: сжатое, с
+# приделанным следом деревом устройств.
+#
+# И то и другое обязательно, причём по одной и той же причине. LK ищет
+# приделанное дерево ровно двумя способами (platform/msm_shared/dev_tree.c,
+# функция dev_tree_appended):
+#
+#   - у СЖАТОГО ядра смещение возвращает распаковщик: там, где кончился
+#     поток gzip, начинается дерево;
+#   - у несжатого читается 32-битное слово по смещению 0x2C.
+#
+# Второе — соглашение 32-битного zImage. У ARM64 Image по смещению 0x2C
+# лежит зарезервированное поле, то есть ноль, и загрузчик уходит искать
+# дерево в самое начало образа, где вместо него заголовок Image. Разбор
+# проваливается, и загрузка кончается отказом:
+#
+#     ERROR: Appended Device Tree Blob not found
+#
+# Именно поэтому образ из несжатого Image без дерева не грузился ничем,
+# кроме подмены ядра в стоковом boot.img через magiskboot: там дерево
+# доставалось от стокового ядра, а сжатие делал сам magiskboot.
+$(PACKED_KERN): image $(BOARD_DTB)
+	gzip -9 -c $(RAW_IMAGE) > $(BUILD)/Image.gz
+	cat $(BUILD)/Image.gz $(BOARD_DTB) > $@
+	@echo "упаковано: $@ ($$(wc -c < $@) байт) = gzip(ядро) + дерево"
 
 # ============================================================================
 #  Запуск в QEMU
