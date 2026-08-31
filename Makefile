@@ -238,6 +238,12 @@ else
       arch/arm64/mmu.c \
       arch/arm64/timer.c
 
+  # Постоянный журнал есть не у всякой платы: он пишет в область ОЗУ,
+  # которую устройство само исключило из общего пула. У QEMU такой нет.
+  ifneq ($(call cfg,LOG_RAMOOPS),)
+    ARCH_BASE_SOURCES += arch/arm64/ramoops.c
+  endif
+
   TEXT_SOURCES := $(CORE_SOURCES) $(ARCH_BASE_SOURCES) \
       kernel/kernel.c kernel/panic.c \
       hal/hal_console_arm64.c \

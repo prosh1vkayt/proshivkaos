@@ -38,6 +38,13 @@ void uart_init(void) {
 }
 
 void uart_putc(char c) {
+    /* Всё, что уходит в порт, дублируется в постоянный журнал. Это не
+       роскошь: на телефоне порт выведен на разъём наушников и без паяного
+       кабеля молчит, а журнал переживает перезагрузку и читается уже из
+       Android. Там, где такой области нет, вызов раскрывается в пустоту —
+       см. CONFIG_LOG_RAMOOPS в arch/arm64/arm64.h. */
+    ramoops_putc(c);
+
     switch (g_kind) {
         case UART_KIND_PL011: pl011_putc(c);    break;
         case UART_KIND_MSM:   msm_uart_putc(c); break;

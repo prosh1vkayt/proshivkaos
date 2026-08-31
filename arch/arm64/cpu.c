@@ -91,12 +91,31 @@ void hal_arch_init(void *boot_info) {
      * 4. MMU — иначе всё ОЗУ некэшируемое и отрисовка кадра тормозит на
      *    порядок.
      * 5. Системный счётчик — hal_time_ms() нужен уже драйверам. */
+    /* 0. Постоянный журнал. Продолжает метку, поставленную в boot.S ещё
+     *    до спуска из EL2, и подхватывает вывод порта — с этого момента
+     *    каждая строка переживает перезагрузку и читается из Android.
+     *    Первым делом потому, что смысл он имеет ровно до тех пор, пока
+     *    не заработало что-то более удобное. */
+    ramoops_init();
+
+    /* Отметки этапов. Каждая следующая означает, что предыдущий шаг
+     * прошёл целиком: журнал обрывается ровно там, где система умерла, и
+     * это единственный способ узнать место падения, пока к отладочному
+     * порту не припаян кабель. */
+    ramoops_write("[1] razbor dereva ustroystv\n");
     platform_probe(boot_info);
+
+    ramoops_write("[2] derevo razobrano, podnimaem port\n");
     uart_init();
     uart_report_platform();
 
+    ramoops_write("[3] vklyuchaem MMU i kesh\n");
     mmu_init();
+
+    ramoops_write("[4] sistemnyy schetchik\n");
     hal_time_init();
+
+    ramoops_write("[5] hal_arch_init zavershen\n");
 }
 
 void hal_cpu_halt(void) {
