@@ -333,6 +333,7 @@ BOARD_DTB   := $(BUILD)/$(BOARD).dtb
 PACKED_KERN := $(BUILD)/Image.gz-dtb
 PACKED_RAW  := $(BUILD)/Image-dtb-uncompressed
 BOOT_IMG_RAW:= $(BUILD)/proshivkaos_boot_uncompressed.img
+BOOT_IMG_SWAP:= $(BUILD)/proshivkaos_boot_swap.img
 ISO         := $(BUILD)/proshivkaos.iso
 
 .PHONY: all text gui touch clean run gui-run touch-run iso image bootimg help mido
@@ -487,6 +488,42 @@ $(PACKED_RAW): image $(BOARD_DTB)
 	k=open('$(RAW_IMAGE)','rb').read(); d=open('$(BOARD_DTB)','rb').read(); \
 	open('$@','wb').write(b'UNCOMPRESSED_IMG'+struct.pack('<I',20+len(k))+k+d)"
 	@echo "упаковано: $@ ($$(wc -c < $@) байт) = метка + ядро + дерево"
+
+# ---------------------------------------------------------------------------
+# Образ методом подмены ядра в чужом boot.img.
+#
+# Самый надёжный путь на этом телефоне, и вот почему. Загрузчик разборчив к
+# тому, как к ядру приделано дерево устройств, и договориться с ним "с
+# нуля" оказалось трудно: смещение он вычисляет распаковщиком, а в
+# fastboot-пути ветки для несжатого образа у него нет вовсе. Зато рядом
+# лежит boot.img, который этот же загрузчик принимает каждый день, — тот,
+# с которого телефон загружается. В нём дерево лежит ровно так, как
+# загрузчику нравится.
+#
+# Поэтому мы не собираем образ, а берём рабочий и подменяем в нём ТОЛЬКО
+# ядро. Дерево, его смещение, сжатие и все поля заголовка достаются нам
+# уже согласованными.
+#
+# Дерево при этом достаётся от системы телефона — и это не потеря, а
+# приобретение: оно описывает то же железо полнее нашего, а загрузчик
+# добавляет в него узел готового экрана.
+#
+#     make mido-swap DONOR=~/mido/boot_lineage.img
+#
+# DONOR — boot.img, снятый с телефона:
+#     adb shell su -c 'dd if=/dev/block/bootdevice/by-name/boot' > boot_lineage.img
+mido-swap: image
+	@test -n "$(DONOR)" || { echo "укажите DONOR=<путь к рабочему boot.img>"; exit 1; }
+	@command -v magiskboot >/dev/null || { echo "magiskboot не найден в PATH"; exit 1; }
+	rm -rf $(BUILD)/swap && mkdir -p $(BUILD)/swap
+	cp "$(DONOR)" $(BUILD)/swap/donor.img
+	cd $(BUILD)/swap && magiskboot unpack donor.img
+	cp $(RAW_IMAGE) $(BUILD)/swap/kernel
+	cd $(BUILD)/swap && magiskboot repack donor.img $(notdir $(BOOT_IMG_SWAP))
+	cp $(BUILD)/swap/$(notdir $(BOOT_IMG_SWAP)) $(BOOT_IMG_SWAP)
+	@echo
+	@echo "собрано: $(BOOT_IMG_SWAP)"
+	@echo "проверка без записи:  fastboot boot $(BOOT_IMG_SWAP)"
 
 bootimg-raw: $(PACKED_RAW)
 	python3 tools/mkbootimg.py \
