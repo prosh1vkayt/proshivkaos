@@ -84,6 +84,8 @@ int ft5x06_init(void) {
 
     /* 1. Такт шины. Загрузчик его не включает — он тачскрином не
           пользуется, — поэтому без этого шага блок QUP просто не отвечает. */
+    early_fb_band(22, 255, 0, 128);    /* дошли до тактирования шины */
+
     if (!gcc_enable_blsp1_qup_i2c(BOARD_I2C_TS_QUP_INDEX)) {
         uart_write("ts: ne udalos vklyuchit takt shiny I2C\n");
         return 0;
@@ -92,6 +94,8 @@ int ft5x06_init(void) {
     /* 2. Линия прерывания — вход с подтяжкой вверх: сигнал активен низким
           уровнем, и в покое линию должно что-то удерживать в единице. */
     tlmm_gpio_input(BOARD_TS_IRQ_GPIO, 1);
+
+    early_fb_band(23, 128, 0, 255);    /* такт включён, выводы настроены */
 
     /* 3. Контроллер шины. */
     if (!i2c_qup_init(g_i2c_base, BOARD_I2C_TS_CORE_HZ, BOARD_I2C_TS_BUS_HZ)) {

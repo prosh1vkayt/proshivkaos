@@ -86,7 +86,13 @@ static int g_device_count = 0;
 static int g_touch_ok = 0;      /* поднялся настоящий тачскрин телефона */
 
 void hal_input_init(void) {
+    /* Полоса 20: дошли до ввода. Если её нет, падение было раньше — в
+       разметке темы или экранной клавиатуре. */
+    early_fb_band(20, 255, 160, 0);
+
     virtio_input_init();
+
+    early_fb_band(21, 0, 160, 255);   /* опрос virtio пережит */
     g_device_count = virtio_input_device_count();
 
     int mx, my;
@@ -106,6 +112,8 @@ void hal_input_init(void) {
             g_has_abs = 1;
         }
     }
+
+    early_fb_band(18, 120, 255, 200);  /* ввод поднят целиком */
 
     g_head = g_tail = 0;
     g_pressed = g_pending_pressed = 0;
