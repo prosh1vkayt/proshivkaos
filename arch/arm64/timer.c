@@ -12,11 +12,27 @@
  */
 #include "hal_time.h"
 #include "arm64.h"
+#include "fdt.h"
 
 #define RTC_DR  0x00    /* PL031: секунды с 1970-01-01 */
 
 static uint64_t g_freq_hz  = 62500000;   /* значение QEMU — на случай CNTFRQ_EL0 == 0 */
 static uint64_t g_start_tick = 0;
+
+/* Календарные часы. Ищутся в дереве устройств и на телефоне не находятся:
+ * PL031 — деталь машины QEMU, а не общая принадлежность ARM.
+ *
+ * Раньше их адрес был зашит в код и читался на любой плате. Это тихо
+ * работало в эмуляторе и намертво вешало телефон: чтение регистра, на
+ * который никто не отвечает, не возвращает мусор — процессор ждёт ответа
+ * с шины, которого не будет. А вызывается это из строки состояния, то
+ * есть при отрисовке самого первого кадра. */
+static uint64_t g_rtc_base = 0;
+static int      g_rtc_ok   = 0;
+
+/* Когда часов нет, время считаем от запуска. Показания будут неверными,
+ * зато монотонными, и строка состояния не превращается в загадку. */
+#define FALLBACK_EPOCH  1767225600u   /* 2026-01-01 00:00:00 UTC */
 
 static inline uint64_t read_cntpct(void) {
     uint64_t t;
@@ -32,6 +48,22 @@ void hal_time_init(void) {
     __asm__ volatile ("mrs %0, cntfrq_el0" : "=r"(f));
     if (f != 0) g_freq_hz = f;
     g_start_tick = read_cntpct();
+
+    g_rtc_ok = 0;
+    if (fdt_valid()) {
+        fdt_node_t node;
+        uint64_t addr = 0;
+        if (fdt_find_compatible("arm,pl031", &node) &&
+            fdt_reg(&node, 0, &addr, 0) && addr) {
+            g_rtc_base = addr;
+            g_rtc_ok   = 1;
+        }
+    } else {
+        /* Дерева нет вовсе — значит мы почти наверняка под эмулятором,
+           который его и не дал. Пробуем по старой памяти. */
+        g_rtc_base = VIRT_RTC_BASE;
+        g_rtc_ok   = 1;
+    }
 }
 
 uint64_t hal_time_ms(void) {
@@ -71,7 +103,8 @@ static void civil_from_days(int64_t z, int *year, int *month, int *day) {
 }
 
 void hal_time_rtc(int *year, int *month, int *day, int *hour, int *min, int *sec) {
-    uint32_t epoch = mmio_read32(VIRT_RTC_BASE + RTC_DR);
+    uint32_t epoch = g_rtc_ok ? mmio_read32(g_rtc_base + RTC_DR)
+                              : (FALLBACK_EPOCH + (uint32_t)(hal_time_ms() / 1000));
 
     int64_t days = (int64_t)(epoch / 86400);
     uint32_t rem = epoch % 86400;

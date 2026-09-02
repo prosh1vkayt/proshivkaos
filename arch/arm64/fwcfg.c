@@ -14,6 +14,7 @@
  * проходят через bswap*.
  */
 #include "arm64.h"
+#include "fdt.h"
 
 /* Смещения регистров (docs/specs/fw_cfg.rst в дереве QEMU) */
 #define FWCFG_REG_DATA  0x00
@@ -67,6 +68,18 @@ static int str_eq(const char *a, const char *b) {
 }
 
 int fwcfg_init(void) {
+    /* Тот же урок, что и с часами: fw_cfg — устройство машины QEMU, и по
+       его адресу на телефоне никто не отвечает, а чтение с шины, которая
+       не отвечает, вешает процессор навсегда. Поэтому спрашиваем дерево:
+       нет узла — нет и опроса. */
+    if (fdt_valid()) {
+        fdt_node_t node;
+        if (!fdt_find_compatible("qemu,fw-cfg-mmio", &node)) {
+            uart_write("fw_cfg: v dereve ustroystv net, propuskaem\n");
+            return 0;
+        }
+    }
+
     char sig[4] = {0, 0, 0, 0};
 
     fwcfg_select(FWCFG_SIG);
