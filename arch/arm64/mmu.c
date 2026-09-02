@@ -42,6 +42,7 @@
 
 #define MAIR_IDX_DEVICE 0
 #define MAIR_IDX_NORMAL 1
+#define MAIR_IDX_NC     2    /* обычная память без кэширования */
 
 #define DESC_TABLE      (3ULL << 0)   /* дескриптор таблицы, а не блока    */
 #define L2_BLOCK_SHIFT  21            /* блок второго уровня — 2 МиБ        */
@@ -130,7 +131,7 @@ void mmu_init(void) {
                                           (uint64_t)BOARD_PSTORE_SIZE);
 
             g_l2_shared[i] = phys | DESC_BLOCK | DESC_AP_RW_EL1 | DESC_AF |
-                             (uncached ? DESC_ATTR(MAIR_IDX_DEVICE)
+                             (uncached ? DESC_ATTR(MAIR_IDX_NC)
                                        : (DESC_ATTR(MAIR_IDX_NORMAL) | DESC_SH_INNER));
         }
 
@@ -141,7 +142,8 @@ void mmu_init(void) {
     /* MAIR_EL1: attr0 = 0x00 (Device-nGnRnE), attr1 = 0xFF (Normal,
        write-back, read/write-allocate и для внутреннего, и для внешнего кэша) */
     uint64_t mair = (0x00ULL << (8 * MAIR_IDX_DEVICE)) |
-                    (0xFFULL << (8 * MAIR_IDX_NORMAL));
+                    (0xFFULL << (8 * MAIR_IDX_NORMAL)) |
+                    (0x44ULL << (8 * MAIR_IDX_NC));
 
     /* TCR_EL1:
        T0SZ = 32      -> виртуальное адресное пространство 4 ГиБ (32 бита),

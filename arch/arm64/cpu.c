@@ -155,6 +155,13 @@ void hal_arch_init(void *boot_info) {
     ramoops_write("[5] hal_arch_init zavershen\n");
 }
 
+/* Отладочная метка из переносимого кода — см. hal/hal.h. Здесь она
+ * превращается в полосу на экране; на платах без такой возможности вызов
+ * раскрывается в пустоту сам собой. */
+void hal_debug_mark(int index, unsigned char r, unsigned char g, unsigned char b) {
+    early_fb_band(index, r, g, b);
+}
+
 void hal_cpu_halt(void) {
     __asm__ volatile ("msr daifset, #0xf");   /* замаскировать D/A/I/F */
     __asm__ volatile ("wfi");
