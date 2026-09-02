@@ -131,7 +131,7 @@ void mmu_init(void) {
                                           (uint64_t)BOARD_PSTORE_SIZE);
 
             g_l2_shared[i] = phys | DESC_BLOCK | DESC_AP_RW_EL1 | DESC_AF |
-                             (uncached ? DESC_ATTR(MAIR_IDX_NC)
+                             (uncached ? DESC_ATTR(MAIR_IDX_DEVICE)
                                        : (DESC_ATTR(MAIR_IDX_NORMAL) | DESC_SH_INNER));
         }
 
