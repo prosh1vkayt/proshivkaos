@@ -76,6 +76,14 @@ void arch_dcache_clean(const void *addr, size_t len);
  * Пишет в область ОЗУ, переживающую перезагрузку, чтобы лог можно было
  * прочитать из Android после неудачного старта. На платах без такой
  * области не собирается вовсе — см. CONFIG_LOG_RAMOOPS. */
+/* --- Полосы на экране (arch/arm64/early_fb.c) -------------------------
+ * Отладочный вывод там, где другого нет: по полосе на этап загрузки. */
+#ifdef CONFIG_EARLY_FB_MARKS
+void early_fb_band(int index, uint8_t r, uint8_t g, uint8_t b);
+#else
+#define early_fb_band(i, r, g, b) do { (void)(i); } while (0)
+#endif
+
 #ifdef CONFIG_LOG_RAMOOPS
 void ramoops_init(const void *dtb);
 void ramoops_putc(char c);

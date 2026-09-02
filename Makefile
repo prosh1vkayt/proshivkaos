@@ -250,6 +250,9 @@ else
   ifneq ($(call cfg,LOG_RAMOOPS),)
     ARCH_BASE_SOURCES += arch/arm64/ramoops.c
   endif
+  ifneq ($(call cfg,EARLY_FB_MARKS),)
+    ARCH_BASE_SOURCES += arch/arm64/early_fb.c
+  endif
 
   TEXT_SOURCES := $(CORE_SOURCES) $(ARCH_BASE_SOURCES) \
       kernel/kernel.c kernel/panic.c \

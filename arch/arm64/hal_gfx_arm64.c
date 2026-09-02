@@ -33,6 +33,7 @@ static int g_width  = 0;
 static int g_height = 0;
 
 void hal_gfx_init(void) {
+    early_fb_band(9, 255, 128, 192);   /* розовая: дошли до графики */
     palette_init();
 
     const platform_info_t *pi = platform();
@@ -63,6 +64,7 @@ void hal_gfx_init(void) {
         g_height = h;
         gfxfb_bind((volatile void *)(uintptr_t)pi->fb_addr, w, h,
                    pi->fb_stride, pi->fb_format);
+        early_fb_band(10, 160, 160, 160);  /* серая: экран подключён */
         return;
     }
 

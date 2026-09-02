@@ -96,6 +96,10 @@ void hal_arch_init(void *boot_info) {
      *    каждая строка переживает перезагрузку и читается из Android.
      *    Первым делом потому, что смысл он имеет ровно до тех пор, пока
      *    не заработало что-то более удобное. */
+    /* Полоса 4, жёлтая: код на C пошёл. Полосы 0-3 ставит boot.S; с этой
+       начинается то, что уже может сломаться по-настоящему. */
+    early_fb_band(4, 255, 255, 0);
+
     ramoops_init(boot_info);
 
     /* Отметки этапов. Каждая следующая означает, что предыдущий шаг
@@ -106,15 +110,19 @@ void hal_arch_init(void *boot_info) {
     platform_probe(boot_info);
 
     ramoops_write("[2] derevo razobrano, podnimaem port\n");
+    early_fb_band(5, 0, 255, 255);      /* голубая: дерево разобрано */
     uart_init();
     uart_report_platform();
 
     ramoops_write("[3] vklyuchaem MMU i kesh\n");
+    early_fb_band(6, 255, 0, 255);      /* сиреневая: порт поднят */
     mmu_init();
 
     ramoops_write("[4] sistemnyy schetchik\n");
+    early_fb_band(7, 255, 128, 0);      /* оранжевая: MMU и кэш включены */
     hal_time_init();
 
+    early_fb_band(8, 128, 255, 128);   /* салатовая: счётчик пошёл */
     ramoops_write("[5] hal_arch_init zavershen\n");
 }
 
