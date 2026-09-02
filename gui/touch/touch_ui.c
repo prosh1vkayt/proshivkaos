@@ -132,6 +132,7 @@ static void launch_app(int index) {
     }
 
     hal_debug_mark(15, 255, 128, 0);   /* приложение поднято */
+    hal_debug_text("  prilozhenie podnyato\n");
 
     /* Клавиатура появляется сама, если приложению есть куда печатать —
        иначе пользователю пришлось бы искать, чем её вызвать. */
@@ -139,6 +140,7 @@ static void launch_app(int index) {
     relayout_current_app();
 
     hal_debug_mark(16, 0, 255, 128);   /* раскладка посчитана */
+    hal_debug_text("  raskladka poschitana\n");
 }
 
 /* ---------------- Статусбар ---------------- */
@@ -545,8 +547,10 @@ void touch_main(void) {
     touch_theme_init(w, h);
     osk_init();
 
+    hal_debug_text("6 podnimaem vvod\n");
     hal_input_init();
     hal_input_set_screen(w, h);
+    hal_debug_text("7 vvod podnyat\n");
 
     for (int i = 0; i < APP_COUNT; i++) g_launched[i] = 0;
 
@@ -558,6 +562,7 @@ void touch_main(void) {
 
     /* Метка: приложения поднялись. Дальше остаётся первая отрисовка. */
     hal_debug_mark(24, 255, 255, 0);
+    hal_debug_text("8 prilozheniya podnyaty\n");
 
     /* Если устройств ввода не нашлось — а на новом железе так и будет,
        пока нет драйвера тачскрина, — управлять оболочкой нечем. Полезнее
@@ -570,15 +575,18 @@ void touch_main(void) {
        рабочий стол. Ветви разные, и падать они могут по-разному. */
     if (!hal_input_available()) {
         hal_debug_mark(14, 255, 255, 255);
+        hal_debug_text("9 vvoda net, otkryvaem O SISTEME\n");
         touch_ui_open("ABOUT");
     } else {
         hal_debug_mark(14, 0, 255, 255);
+        hal_debug_text("9 vvod est, rabochiy stol\n");
         g_screen = SCREEN_HOME;
     }
     /* Метка перед первым кадром. Если она есть, а полосы всё ещё видны —
        значит отрисовка не дошла до экрана; если её нет — падение раньше,
        на разборе того, какой экран показывать. */
     hal_debug_mark(25, 0, 255, 0);
+    hal_debug_text("10 risuem pervyy kadr\n");
 
     render_frame();
 

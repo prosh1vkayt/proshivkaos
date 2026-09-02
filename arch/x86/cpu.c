@@ -53,6 +53,8 @@ void hal_debug_mark(int index, unsigned char r, unsigned char g, unsigned char b
     (void)index; (void)r; (void)g; (void)b;
 }
 
+void hal_debug_text(const char *s) { (void)s; }
+
 void hal_arch_init(void *boot_info) {
     /* На x86 к моменту входа в kmain процессор уже в защищённом режиме с
        плоской моделью памяти — этим занимался GRUB. Разбирать структуру

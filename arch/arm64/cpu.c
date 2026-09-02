@@ -123,16 +123,26 @@ void hal_arch_init(void *boot_info) {
      * прошёл целиком: журнал обрывается ровно там, где система умерла, и
      * это единственный способ узнать место падения, пока к отладочному
      * порту не припаян кабель. */
+    early_con_init();
+    early_con_color("proshivkaOS NEXT\n", 120, 220, 255);
+
     ramoops_write("[1] razbor dereva ustroystv\n");
+    early_con_puts("1 razbor dereva\n");
     platform_probe(boot_info);
 
     ramoops_write("[2] derevo razobrano, podnimaem port\n");
     early_fb_band(5, 0, 255, 255);      /* голубая: дерево разобрано */
+    early_con_puts("2 port, ekran ");
+    early_con_hex(platform()->fb_addr);
+    early_con_puts(" model ");
+    early_con_puts(platform()->model ? platform()->model : "?");
+    early_con_puts("\n");
     uart_init();
     uart_report_platform();
 
     ramoops_write("[3] vklyuchaem MMU i kesh\n");
     early_fb_band(6, 255, 0, 255);      /* сиреневая: порт поднят */
+    early_con_puts("3 vklyuchaem MMU\n");
     mmu_init();
 
     /* Щель между включением MMU и этой точкой оказалась смертельной, а
@@ -141,6 +151,7 @@ void hal_arch_init(void *boot_info) {
        и прошлый раз это уже стоило нам круга. Между ними оставлен
        пропуск. */
     early_fb_band(17, 0, 255, 255);     /* ярко-голубая: вернулись из mmu_init */
+    early_con_puts("4 MMU vklyuchen\n");
 
     ramoops_write("[4] sistemnyy schetchik\n");
     early_fb_band(19, 200, 0, 255);     /* фиолетовая: журнал пережит */
@@ -149,6 +160,7 @@ void hal_arch_init(void *boot_info) {
     hal_time_init();
 
     early_fb_band(8, 128, 255, 128);   /* салатовая: счётчик пошёл */
+    early_con_puts("5 schetchik, arch gotov\n");
     ramoops_write("[5] hal_arch_init zavershen\n");
 }
 
@@ -158,6 +170,8 @@ void hal_arch_init(void *boot_info) {
 void hal_debug_mark(int index, unsigned char r, unsigned char g, unsigned char b) {
     early_fb_band(index, r, g, b);
 }
+
+void hal_debug_text(const char *s) { early_con_puts(s); }
 
 void hal_cpu_halt(void) {
     __asm__ volatile ("msr daifset, #0xf");   /* замаскировать D/A/I/F */
@@ -212,6 +226,18 @@ void arm64_exception_handler(uint64_t index, uint64_t esr, uint64_t far, uint64_
         case 0x2F:             early_fb_band(13, 255,   0, 255); break; /* сиреневая: внешний сбой шины */
         default:               early_fb_band(13,   0, 255, 255); break; /* голубая: прочее */
     }
+
+    /* Полное описание сбоя текстом. Раньше оно уходило в порт, которого
+       на этом аппарате никто не слышит, и о падении можно было судить
+       только по красной полосе. */
+    early_con_color("\n*** SBOY ***\n", 255, 80, 80);
+    early_con_puts(vector_name(index));
+    early_con_puts(" ");
+    early_con_puts(exception_class_name(esr));
+    early_con_puts("\nESR "); early_con_hex(esr);
+    early_con_puts("\nFAR "); early_con_hex(far);
+    early_con_puts("\nELR "); early_con_hex(elr);
+    early_con_puts("\n");
 
     uart_write("\n*** ARM64 EXCEPTION ***\n");
     uart_write("  vector : "); uart_write(vector_name(index));
