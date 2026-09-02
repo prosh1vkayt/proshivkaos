@@ -130,6 +130,9 @@ int  keys_gpio_poll(int *down);
 
 uint32_t gcc_qup_i2c_cbcr(int index);
 
+void tlmm_gpio_func(int gpio, int func, int drive_ma, int pull);
+uint32_t tlmm_gpio_cfg(int gpio);
+
 void tlmm_gpio_output(int gpio, int value);
 void tlmm_gpio_input(int gpio, int pull_up);
 void tlmm_gpio_set(int gpio, int value);

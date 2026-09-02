@@ -100,7 +100,23 @@ int ft5x06_init(void) {
           уровнем, и в покое линию должно что-то удерживать в единице. */
     tlmm_gpio_input(BOARD_TS_IRQ_GPIO, 1);
 
-    /* 3. Контроллер шины. */
+    /* 3. ВЫВОДЫ ШИНЫ. Без этого шага всё остальное бессмысленно: вывод
+          корпуса сам по себе ничей и остаётся обычным GPIO, пока ему не
+          назначена работа. Контроллер при этом честно поднимается и
+          честно передаёт — в никуда. */
+    early_con_puts("TS: vyvody shiny do ");
+    early_con_hex((uint64_t)tlmm_gpio_cfg(BOARD_I2C_TS_SDA_GPIO));
+
+    tlmm_gpio_func(BOARD_I2C_TS_SDA_GPIO, BOARD_I2C_TS_PIN_FUNC,
+                   BOARD_I2C_TS_PIN_DRIVE, 0);
+    tlmm_gpio_func(BOARD_I2C_TS_SCL_GPIO, BOARD_I2C_TS_PIN_FUNC,
+                   BOARD_I2C_TS_PIN_DRIVE, 0);
+
+    early_con_puts(" posle ");
+    early_con_hex((uint64_t)tlmm_gpio_cfg(BOARD_I2C_TS_SDA_GPIO));
+    early_con_puts("\n");
+
+    /* 4. Контроллер шины. */
     int bus = i2c_qup_init(g_i2c_base, BOARD_I2C_TS_CORE_HZ, BOARD_I2C_TS_BUS_HZ);
     early_con_puts(bus ? "TS: shina I2C podnyata\n" : "TS: shina I2C NE podnyalas\n");
     if (!bus) {

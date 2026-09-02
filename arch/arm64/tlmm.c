@@ -77,6 +77,43 @@ void tlmm_gpio_input(int gpio, int pull_up) {
     dsb_sy();
 }
 
+/* Переключить вывод на альтернативную работу.
+ *
+ * Это то, чего не хватало шине I2C. Вывод корпуса сам по себе ничей: он
+ * становится ножкой I2C, UART или обычным GPIO в зависимости от поля
+ * FUNC_SEL. Пока оно в нуле, вывод остаётся обычным GPIO, и сигналы
+ * контроллера шины до микросхемы просто не доходят — сколько ни настраивай
+ * сам контроллер.
+ *
+ * Номер работы берётся из дерева прошивки: узел i2c_3_active просит
+ * function = "blsp_i2c3" для gpio10 и gpio11, а в таблице выводов
+ * msm8953 эта работа идёт третьей.
+ *
+ * drive_ma — сила драйвера в миллиамперах, как в дереве (drive-strength
+ * = 2). Поле хранит (мА / 2 - 1). pull: 0 без подтяжки, 1 вниз, 3 вверх;
+ * у этой шины подтяжки внешние (focaltech,i2c-pull-up).
+ */
+void tlmm_gpio_func(int gpio, int func, int drive_ma, int pull) {
+    if (gpio < 0 || gpio >= TLMM_MAX_GPIO) return;
+
+    uint32_t drv = (drive_ma >= 2) ? (uint32_t)(drive_ma / 2 - 1) : 0u;
+    if (drv > 7) drv = 7;
+
+    uint32_t cfg = ((uint32_t)(pull & 3) << CFG_PULL_SHIFT) |
+                   ((uint32_t)(func & 0xF) << CFG_FUNC_SHIFT) |
+                   (drv << CFG_DRV_SHIFT);
+    /* Выход не разрешаем: направлением на альтернативной работе
+       распоряжается сам блок, которому вывод отдан. */
+    mmio_write32(gpio_tile(gpio) + TLMM_GPIO_CFG, cfg);
+    dsb_sy();
+}
+
+/* Что сейчас написано в настройке вывода — чтобы показать на экране. */
+uint32_t tlmm_gpio_cfg(int gpio) {
+    if (gpio < 0 || gpio >= TLMM_MAX_GPIO) return 0xFFFFFFFFu;
+    return mmio_read32(gpio_tile(gpio) + TLMM_GPIO_CFG);
+}
+
 void tlmm_gpio_set(int gpio, int value) {
     if (gpio < 0 || gpio >= TLMM_MAX_GPIO) return;
     mmio_write32(gpio_tile(gpio) + TLMM_GPIO_IN_OUT, value ? IN_OUT_OUT : 0);
