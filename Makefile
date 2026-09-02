@@ -269,7 +269,7 @@ else
   # В сборке под эмулятор их нет вовсе — вместо них работают слабые
   # заглушки в hal/hal_input_arm64.c, и слой ввода разницы не замечает.
   ifneq ($(call cfg,TLMM_GPIO),)
-    ARCH_INPUT_SOURCES += arch/arm64/tlmm.c
+    ARCH_INPUT_SOURCES += arch/arm64/tlmm.c arch/arm64/keys_gpio.c
   endif
   ifneq ($(call cfg,CLK_GCC_MSM8953),)
     ARCH_INPUT_SOURCES += arch/arm64/gcc_msm8953.c

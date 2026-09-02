@@ -85,10 +85,10 @@ void early_con_puts(const char *s);
 void early_con_color(const char *s, uint8_t r, uint8_t g, uint8_t b);
 void early_con_hex(uint64_t v);
 #else
-#define early_fb_band(i, r, g, b) do { (void)(i); } while (0)
+#define early_fb_band(i, r, g, b) do { (void)(i); (void)(r); (void)(g); (void)(b); } while (0)
 #define early_con_init()          do { } while (0)
 #define early_con_puts(s)         do { (void)(s); } while (0)
-#define early_con_color(s, r, g, b) do { (void)(s); } while (0)
+#define early_con_color(s, r, g, b) do { (void)(s); (void)(r); (void)(g); (void)(b); } while (0)
 #define early_con_hex(v)          do { (void)(v); } while (0)
 #endif
 
@@ -101,7 +101,7 @@ int  ramoops_region(uint64_t *base, uint32_t *size);
 #define ramoops_init(d)   do { (void)(d); } while (0)
 #define ramoops_putc(c)   do { (void)(c); } while (0)
 #define ramoops_write(s)  do { (void)(s); } while (0)
-#define ramoops_region(b, s) (0)
+#define ramoops_region(b, s) ((void)(b), (void)(s), 0)
 #endif
 void arch_dcache_invalidate(void *addr, size_t len);
 
@@ -125,6 +125,11 @@ int  ramfb_setup(void *framebuffer, int width, int height);
 int  gcc_enable_blsp1_qup_i2c(int qup_index);
 
 /* ---------------- Выводы общего назначения (Qualcomm TLMM) ---------------- */
+int  keys_gpio_init(void);
+int  keys_gpio_poll(int *down);
+
+uint32_t gcc_qup_i2c_cbcr(int index);
+
 void tlmm_gpio_output(int gpio, int value);
 void tlmm_gpio_input(int gpio, int pull_up);
 void tlmm_gpio_set(int gpio, int value);

@@ -69,6 +69,15 @@ static int wait_branch_on(uint32_t cbcr) {
 
 /* Включить тактирование шины I2C номер qup_index (1..4) на BLSP1.
  * Возвращает 1, если такт реально пошёл. */
+/* Прочитать регистр ветви — чтобы показать его состояние на экране.
+ * Значение говорит больше, чем "получилось/не получилось": бит CLK_OFF
+ * отвечает, пошёл ли такт вообще, а всё остальное показывает, добрались
+ * ли мы до нужного регистра или читаем пустоту. */
+uint32_t gcc_qup_i2c_cbcr(int qup_index) {
+    if (qup_index < 1 || qup_index > 4) return 0xFFFFFFFFu;
+    return mmio_read32(gcc_base() + g_blsp1_qup_i2c[qup_index - 1].cbcr);
+}
+
 int gcc_enable_blsp1_qup_i2c(int qup_index) {
     if (qup_index < 1 || qup_index > 4) return 0;
 

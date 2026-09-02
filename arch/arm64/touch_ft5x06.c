@@ -84,9 +84,14 @@ int ft5x06_init(void) {
 
     /* 1. Такт шины. Загрузчик его не включает — он тачскрином не
           пользуется, — поэтому без этого шага блок QUP просто не отвечает. */
-    early_fb_band(22, 255, 0, 128);    /* дошли до тактирования шины */
+    early_con_puts("TS: takt shiny QUP");
+    early_con_hex((uint64_t)BOARD_I2C_TS_QUP_INDEX);
+    int clk = gcc_enable_blsp1_qup_i2c(BOARD_I2C_TS_QUP_INDEX);
+    early_con_puts(clk ? " OK CBCR " : " NE POSHYOL CBCR ");
+    early_con_hex((uint64_t)gcc_qup_i2c_cbcr(BOARD_I2C_TS_QUP_INDEX));
+    early_con_puts("\n");
 
-    if (!gcc_enable_blsp1_qup_i2c(BOARD_I2C_TS_QUP_INDEX)) {
+    if (!clk) {
         uart_write("ts: ne udalos vklyuchit takt shiny I2C\n");
         return 0;
     }
@@ -95,10 +100,10 @@ int ft5x06_init(void) {
           уровнем, и в покое линию должно что-то удерживать в единице. */
     tlmm_gpio_input(BOARD_TS_IRQ_GPIO, 1);
 
-    early_fb_band(23, 128, 0, 255);    /* такт включён, выводы настроены */
-
     /* 3. Контроллер шины. */
-    if (!i2c_qup_init(g_i2c_base, BOARD_I2C_TS_CORE_HZ, BOARD_I2C_TS_BUS_HZ)) {
+    int bus = i2c_qup_init(g_i2c_base, BOARD_I2C_TS_CORE_HZ, BOARD_I2C_TS_BUS_HZ);
+    early_con_puts(bus ? "TS: shina I2C podnyata\n" : "TS: shina I2C NE podnyalas\n");
+    if (!bus) {
         uart_write("ts: I2C ne inicializirovan\n");
         return 0;
     }
@@ -109,11 +114,18 @@ int ft5x06_init(void) {
     /* 5. Проверка, что на шине именно то, что мы ожидаем. Это же и первая
           настоящая проверка, что вся цепочка такт-шина-выводы собрана
           верно: если ответ пришёл и он осмысленный, значит работает всё. */
+    early_con_puts("TS: sbros vypolnen, sprashivaem 0x38\n");
+
     uint8_t chip_id = 0;
     if (!i2c_qup_read_regs(g_i2c_base, BOARD_TS_I2C_ADDR, FT_REG_CHIP_ID, &chip_id, 1)) {
+        early_con_color("TS: kontroller ne otvechaet\n", 255, 180, 0);
         uart_write("ts: kontroller ne otvechaet po adresu 0x38\n");
         return 0;
     }
+
+    early_con_puts("TS: otvetil, id ");
+    early_con_hex((uint64_t)chip_id);
+    early_con_puts("\n");
 
     uint8_t fw = 0;
     i2c_qup_read_regs(g_i2c_base, BOARD_TS_I2C_ADDR, FT_REG_FW_VERSION, &fw, 1);

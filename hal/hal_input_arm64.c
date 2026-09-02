@@ -18,6 +18,7 @@
  */
 #include "hal_input.h"
 #include "arm64.h"
+#include "hal_time.h"
 
 int uart_getc(void);
 
@@ -25,6 +26,14 @@ int uart_getc(void);
  * arch/arm64/touch_ft5x06.c, если он попал в сборку. Так слой ввода
  * обходится без единого #ifdef по плате. */
 __attribute__((weak)) int  ft5x06_init(void)  { return 0; }
+
+/* Ждём ли мы тачскрин на этой плате. Под эмулятором — нет, и задерживать
+ * загрузку ради несуществующего устройства там незачем. */
+#ifdef CONFIG_TOUCH_FT5X06
+static int hal_input_touch_expected(void) { return 1; }
+#else
+static int hal_input_touch_expected(void) { return 0; }
+#endif
 __attribute__((weak)) int  ft5x06_ready(void) { return 0; }
 __attribute__((weak)) int  ft5x06_poll(int *x, int *y, int *pressed) {
     (void)x; (void)y; (void)pressed; return 0;
@@ -32,6 +41,11 @@ __attribute__((weak)) int  ft5x06_poll(int *x, int *y, int *pressed) {
 __attribute__((weak)) void ft5x06_range(int *max_x, int *max_y) {
     (void)max_x; (void)max_y;
 }
+
+/* Клавиши на выводах TLMM — там же, где и тачскрин: настоящий драйвер в
+ * arch/arm64/keys_gpio.c, а здесь заглушки для плат без них. */
+__attribute__((weak)) int  keys_gpio_init(void) { return 0; }
+__attribute__((weak)) int  keys_gpio_poll(int *down) { (void)down; return 0; }
 
 /* Коды из linux/input-event-codes.h — virtio-input использует именно их,
  * ту же нумерацию, что и настоящий драйвер тачскрина в Linux. */
@@ -83,6 +97,7 @@ static void push(int type, int x, int y, int pressed, int key) {
 }
 
 static int g_device_count = 0;
+static int g_keys_ok = 0;
 static int g_touch_ok = 0;      /* поднялся настоящий тачскрин телефона */
 
 void hal_input_init(void) {
@@ -105,11 +120,24 @@ void hal_input_init(void) {
     /* Настоящий тачскрин пробуем поднять только если virtio ничего не дал.
        Под эмулятором virtio есть всегда, и лезть на несуществующую шину
        I2C незачем; на телефоне всё ровно наоборот. */
+    /* Клавиши поднимаем всегда: они не мешают ни эмулятору (там их просто
+       нет), ни тачскрину, а на телефоне это может оказаться единственный
+       способ управления. */
+    g_keys_ok = keys_gpio_init();
+
     if (g_device_count == 0) {
         g_touch_ok = ft5x06_init();
         if (g_touch_ok) {
             ft5x06_range(&g_abs_max_x, &g_abs_max_y);
             g_has_abs = 1;
+        } else if (hal_input_touch_expected()) {
+            /* Пауза, чтобы успеть прочитать причину.
+             *
+             * Драйвер подробно рассказал на экране, где именно
+             * споткнулся, но следом рисуется первый кадр и затирает всё.
+             * Пять секунд — ровно чтобы сфотографировать. Когда тачскрин
+             * заработает, паузы не будет: она только на пути отказа. */
+            hal_time_delay_ms(5000);
         }
     }
 
@@ -135,7 +163,11 @@ int hal_input_has_cursor(void) { return !g_has_abs; }
 
 /* На реальном телефоне virtio-устройств нет (они существуют только внутри
  * QEMU), а драйвера тачскрина по I2C ещё нет — значит, ввода нет вовсе. */
-int hal_input_available(void) { return g_device_count > 0 || g_touch_ok; }
+int hal_input_available(void) {
+    /* Клавиша тоже считается: с ней интерфейсом можно управлять, пусть и
+       одной кнопкой, — а значит открывать сразу "о системе" уже незачем. */
+    return g_device_count > 0 || g_touch_ok || g_keys_ok;
+}
 
 void hal_input_pointer_pos(int *x, int *y) {
     *x = g_x;
@@ -189,6 +221,17 @@ static void pump_hardware(void) {
             g_dirty = 1;
             flush_pointer_frame();
         }
+    }
+
+    /* --- Аппаратная клавиша телефона ---
+       Одна клавиша, а значит она обязана быть универсальной: посылаем
+       ESC, а оболочка трактует его как "назад" внутри приложения и как
+       переключатель на рабочем столе. Отпускание не шлём: интерфейсу
+       нужно само нажатие, а не его длительность. */
+    {
+        int down;
+        if (keys_gpio_poll(&down) && down)
+            push(HAL_EV_KEY, g_x, g_y, g_pressed, 27);
     }
 
     /* --- Клавиши из последовательного порта --- */
