@@ -153,10 +153,28 @@
  * ассемблер в arch/arm64/boot.S, а он их не понимает. Значения и так
  * помещаются в unsigned int, так что для C ничего не меняется.
  */
-#define BOARD_PSTORE_BASE          0xBFE80000
-#define BOARD_PSTORE_SIZE          0x80000
-#define BOARD_PSTORE_CONSOLE_OFF   0x40000
-#define BOARD_PSTORE_CONSOLE_ADDR  0xBFEC0000
-#define BOARD_PSTORE_CONSOLE_SIZE  0x40000
+/*
+ * ЭТИ ЧИСЛА ЗАВИСЯТ ОТ ПРОШИВКИ, и разброс большой:
+ *
+ *   Android (LineageOS, Pixel Experience, ядро 4.9)
+ *       область 0x9FF00000 на 1 МиБ, узел pstore_reserve_mem_region.
+ *       Границы зон ядро берёт из параметров модуля, а не из дерева:
+ *       console_size=524288, record=4096, ftrace=4096, pmsg=32768,
+ *       откуда зона дампов 0x77000 и консоль по 0x9FF77000.
+ *
+ *   mainline (ядро 6.x)
+ *       область 0xBFE80000 на 512 КиБ, узел с compatible = "ramoops",
+ *       консоль по 0xBFEC0000.
+ *
+ * Здесь стоит вариант для Android: у его узла НЕТ свойства compatible,
+ * поэтому найти область в дереве нельзя и константа остаётся единственным
+ * источником. У mainline узел размечен как положено, и arch/arm64/ramoops.c
+ * вычитывает всё оттуда сам, не заглядывая сюда.
+ */
+#define BOARD_PSTORE_BASE          0x9FF00000
+#define BOARD_PSTORE_SIZE          0x100000
+#define BOARD_PSTORE_CONSOLE_OFF   0x77000
+#define BOARD_PSTORE_CONSOLE_ADDR  0x9FF77000
+#define BOARD_PSTORE_CONSOLE_SIZE  0x80000
 
 #endif
