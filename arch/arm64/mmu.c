@@ -52,6 +52,18 @@
 static uint64_t g_l1_table[4] __attribute__((aligned(4096)));
 static uint64_t g_l2_low[L2_ENTRIES] __attribute__((aligned(4096)));
 
+#ifdef BOARD_HAS_STATIC_FB
+/* Таблица для гигабайта, в котором лежат кадр и область журнала. Оба
+ * нужно исключить из кэширования, а гигабайтным блоком этого не сделать. */
+static uint64_t g_l2_shared[L2_ENTRIES] __attribute__((aligned(4096)));
+
+/* Попадает ли блок в диапазон [начало, начало+длина). */
+static int in_range(uint64_t blk, uint64_t start, uint64_t len) {
+    uint64_t sz = 1ULL << L2_BLOCK_SHIFT;
+    return blk + sz > (start & ~(sz - 1)) && blk < start + len;
+}
+#endif
+
 static int g_mmu_on = 0;
 
 int mmu_enabled(void) { return g_mmu_on; }
@@ -87,6 +99,44 @@ void mmu_init(void) {
         g_l1_table[i] = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NORMAL) |
                         DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF;
     }
+
+#ifdef BOARD_HAS_STATIC_FB
+    /*
+     * КАДР И ЖУРНАЛ ИЗ КЭША ИСКЛЮЧАЮТСЯ.
+     *
+     * Оба буфера общие с тем, что живёт за пределами процессора: кадр
+     * читает напрямую контроллер дисплея, а журнал должен пережить
+     * зависание, при котором кэш уже никто не вытолкнет. Кэшировать такое
+     * означает всякий раз вручную выталкивать записи и надеяться, что не
+     * забыл, — а на этом устройстве ещё и надеяться, что упреждающее
+     * чтение процессора не залезет в соседнюю защищённую область.
+     *
+     * Разметив их как память устройств, мы снимаем вопрос целиком: запись
+     * попадает в ОЗУ сразу, обслуживать кэш не нужно, упреждающего чтения
+     * не бывает.
+     *
+     * Гигабайтным блоком так сделать нельзя — отсюда ещё одна таблица
+     * второго уровня на этот гигабайт.
+     */
+    {
+        const uint64_t gib = (uint64_t)BOARD_FB_ADDR & ~0x3FFFFFFFULL;
+        const uint64_t fb_len = (uint64_t)BOARD_FB_STRIDE * BOARD_FB_HEIGHT;
+
+        for (int i = 0; i < L2_ENTRIES; i++) {
+            uint64_t phys = gib + ((uint64_t)i << L2_BLOCK_SHIFT);
+
+            int uncached = in_range(phys, (uint64_t)BOARD_FB_ADDR, fb_len)
+                        || in_range(phys, (uint64_t)BOARD_PSTORE_BASE,
+                                          (uint64_t)BOARD_PSTORE_SIZE);
+
+            g_l2_shared[i] = phys | DESC_BLOCK | DESC_AP_RW_EL1 | DESC_AF |
+                             (uncached ? DESC_ATTR(MAIR_IDX_DEVICE)
+                                       : (DESC_ATTR(MAIR_IDX_NORMAL) | DESC_SH_INNER));
+        }
+
+        g_l1_table[gib >> 30] = (uint64_t)(uintptr_t)g_l2_shared | DESC_TABLE;
+    }
+#endif
 
     /* MAIR_EL1: attr0 = 0x00 (Device-nGnRnE), attr1 = 0xFF (Normal,
        write-back, read/write-allocate и для внутреннего, и для внешнего кэша) */
