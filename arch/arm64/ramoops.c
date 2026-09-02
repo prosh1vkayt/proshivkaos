@@ -172,6 +172,19 @@ void ramoops_init(const void *dtb) {
                            : "[log] oblast zhurnala: konstanta platy\n");
 }
 
+/* Где на самом деле лежит журнал.
+ *
+ * Спрашивает arch/arm64/mmu.c: область надо отобразить, а её адрес до
+ * разбора дерева неизвестен — он может отличаться от константы платы.
+ * Именно на этом однажды и попались: карта отображала константу, а писали
+ * мы по адресу из дерева, и первая же запись после включения MMU падала. */
+int ramoops_region(uint64_t *base, uint32_t *size) {
+    if (!g_ready) return 0;
+    *base = (uint64_t)(uintptr_t)g_base;
+    *size = BOARD_PSTORE_CONSOLE_SIZE;
+    return 1;
+}
+
 void ramoops_putc(char c) {
     if (!g_ready) return;
 

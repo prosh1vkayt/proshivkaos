@@ -51,13 +51,9 @@
 /* Таблицы трансляции. Выравнивание на 4 КиБ — требование архитектуры
  * (младшие биты адреса таблицы под сам адрес не отводятся). */
 static uint64_t g_l1_table[4] __attribute__((aligned(4096)));
-static uint64_t g_l2_low[L2_ENTRIES] __attribute__((aligned(4096)));
+static uint64_t g_l2[4][L2_ENTRIES] __attribute__((aligned(4096)));
 
 #ifdef BOARD_HAS_STATIC_FB
-/* Таблица для гигабайта, в котором лежат кадр и область журнала. Оба
- * нужно исключить из кэширования, а гигабайтным блоком этого не сделать. */
-static uint64_t g_l2_shared[L2_ENTRIES] __attribute__((aligned(4096)));
-
 /* Попадает ли блок в диапазон [начало, начало+длина). */
 static int in_range(uint64_t blk, uint64_t start, uint64_t len) {
     uint64_t sz = 1ULL << L2_BLOCK_SHIFT;
@@ -69,75 +65,92 @@ static int g_mmu_on = 0;
 
 int mmu_enabled(void) { return g_mmu_on; }
 
-void mmu_init(void) {
+void mmu_init(const void *dtb) {
     if (g_mmu_on) return;
 
-    /* Первый гигабайт — по кускам в 2 МиБ: граница между регистрами и ОЗУ
-       проходит внутри него, и гигабайтным блоком её не выразить. */
-    for (int i = 0; i < L2_ENTRIES; i++) {
-        uint64_t phys = (uint64_t)i << L2_BLOCK_SHIFT;
-
-        if (phys < (uint64_t)BOARD_RAM_START) {
-            /* Регистры устройств. Кэшировать их нельзя ни при каких
-               обстоятельствах: чтение регистра статуса из кэша вернёт
-               вчерашнее значение. */
-            g_l2_low[i] = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_DEVICE) |
-                          DESC_AP_RW_EL1 | DESC_AF;
-        } else {
-            /* Обычная память. Здесь может лежать и сам образ — загрузчик
-               телефона кладёт ядро именно в начало ОЗУ. */
-            g_l2_low[i] = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NORMAL) |
-                          DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF;
-        }
-    }
-
-    /* Верхний уровень: первый гигабайт через таблицу выше, остальные три —
-       блоками целиком, они целиком ОЗУ. */
-    g_l1_table[0] = (uint64_t)(uintptr_t)g_l2_low | DESC_TABLE;
-
-    for (int i = 1; i < 4; i++) {
-        uint64_t phys = (uint64_t)i << 30;
-        g_l1_table[i] = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NORMAL) |
-                        DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF;
-    }
-
-#ifdef BOARD_HAS_STATIC_FB
     /*
-     * КАДР И ЖУРНАЛ ИЗ КЭША ИСКЛЮЧАЮТСЯ.
+     * ОТОБРАЖАЕМ ТОЛЬКО ТО, ЧТО НУЖНО. Это главное решение в этом файле,
+     * и далось оно опытом.
      *
-     * Оба буфера общие с тем, что живёт за пределами процессора: кадр
-     * читает напрямую контроллер дисплея, а журнал должен пережить
-     * зависание, при котором кэш уже никто не вытолкнет. Кэшировать такое
-     * означает всякий раз вручную выталкивать записи и надеяться, что не
-     * забыл, — а на этом устройстве ещё и надеяться, что упреждающее
-     * чтение процессора не залезет в соседнюю защищённую область.
+     * Раньше здесь была сплошная карта на четыре гигабайта: всё, что не
+     * периферия, объявлялось обычной памятью. На эмуляторе так можно, на
+     * телефоне — нет. Оперативная память телефона поделена между
+     * процессором и соседями: модемом, звуковым сопроцессором,
+     * видеокодеком, защищёнными службами. Их области закрыты блоком
+     * защиты памяти, и обращение к ним не возвращает ошибку, а сбрасывает
+     * аппарат целиком.
      *
-     * Разметив их как память устройств, мы снимаем вопрос целиком: запись
-     * попадает в ОЗУ сразу, обслуживать кэш не нужно, упреждающего чтения
-     * не бывает.
+     * Достаточно, чтобы туда заглянул сам процессор — а он заглядывает.
+     * Кэш работает с упреждением: встретив обращение к памяти, процессор
+     * подтягивает соседние строки заранее, не спрашивая, нужны ли они.
+     * Отобразив чужую область как обычную память, мы разрешаем ему это
+     * делать. Симптом ровно такой, какой мы и видели: система живёт до
+     * включения MMU и молча перезагружается сразу после.
      *
-     * Гигабайтным блоком так сделать нельзя — отсюда ещё одна таблица
-     * второго уровня на этот гигабайт.
+     * Поэтому карта теперь состоит из перечисленных окон, а всё
+     * остальное просто не отображено. Промах по чужой памяти становится
+     * обычным сбоем обращения, который обработчик исключений покажет на
+     * экране, вместо безмолвной перезагрузки.
      */
-    {
-        const uint64_t gib = (uint64_t)BOARD_FB_ADDR & ~0x3FFFFFFFULL;
-        const uint64_t fb_len = (uint64_t)BOARD_FB_STRIDE * BOARD_FB_HEIGHT;
+    extern char _start[];
+    extern char __stack_top[];
 
+    const uint64_t blk = 1ULL << L2_BLOCK_SHIFT;
+
+    /* Окно нашего образа: код, данные, .bss и стек. Границы берём у
+       компоновщика, а не на глаз. */
+    const uint64_t img_lo = (uint64_t)(uintptr_t)_start & ~(blk - 1);
+    const uint64_t img_hi = ((uint64_t)(uintptr_t)__stack_top + blk - 1) & ~(blk - 1);
+
+    /* Окно дерева устройств: загрузчик кладёт его отдельно от образа, а
+       ссылки на строки внутри него система хранит и после включения MMU. */
+    uint64_t dtb_lo = 0, dtb_hi = 0;
+    if (dtb) {
+        dtb_lo = (uint64_t)(uintptr_t)dtb & ~(blk - 1);
+        dtb_hi = dtb_lo + 2 * blk;
+    }
+
+    /* Журнал спрашиваем у него самого: адрес он мог взять из дерева, и
+       тогда он не совпадает с константой платы. */
+    uint64_t log_base = 0; uint32_t log_size = 0;
+    if (!ramoops_region(&log_base, &log_size)) { log_base = 0; log_size = 0; }
+
+    for (int gib = 0; gib < 4; gib++) {
         for (int i = 0; i < L2_ENTRIES; i++) {
-            uint64_t phys = gib + ((uint64_t)i << L2_BLOCK_SHIFT);
+            uint64_t phys = ((uint64_t)gib << 30) | ((uint64_t)i << L2_BLOCK_SHIFT);
+            uint64_t desc = 0;              /* по умолчанию — не отображено */
 
-            int uncached = in_range(phys, (uint64_t)BOARD_FB_ADDR, fb_len)
-                        || in_range(phys, (uint64_t)BOARD_PSTORE_BASE,
-                                          (uint64_t)BOARD_PSTORE_SIZE);
-
-            g_l2_shared[i] = phys | DESC_BLOCK | DESC_AP_RW_EL1 | DESC_AF |
-                             (uncached ? DESC_ATTR(MAIR_IDX_DEVICE)
-                                       : (DESC_ATTR(MAIR_IDX_NORMAL) | DESC_SH_INNER));
+            if (phys < (uint64_t)BOARD_RAM_START) {
+                /* Регистры устройств. Кэшировать нельзя ни при каких
+                   обстоятельствах: чтение регистра статуса из кэша вернёт
+                   вчерашнее значение. */
+                desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_DEVICE) |
+                       DESC_AP_RW_EL1 | DESC_AF;
+            } else if ((phys >= img_lo && phys < img_hi) ||
+                       (dtb_hi && phys >= dtb_lo && phys < dtb_hi)) {
+                /* Наша собственная память — единственное, что имеет смысл
+                   кэшировать. */
+                desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NORMAL) |
+                       DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF;
+            }
+#ifdef BOARD_HAS_STATIC_FB
+            else if (in_range(phys, (uint64_t)BOARD_FB_ADDR,
+                              (uint64_t)BOARD_FB_STRIDE * BOARD_FB_HEIGHT) ||
+                     in_range(phys, (uint64_t)BOARD_PSTORE_BASE,
+                              (uint64_t)BOARD_PSTORE_SIZE) ||
+                     (log_size && in_range(phys, log_base, log_size))) {
+                /* Кадр и журнал: общие с тем, что вне процессора. Память
+                   устройств — чтобы не кэшировалось и не читалось
+                   наперёд. */
+                desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_DEVICE) |
+                       DESC_AP_RW_EL1 | DESC_AF;
+            }
+#endif
+            g_l2[gib][i] = desc;
         }
 
-        g_l1_table[gib >> 30] = (uint64_t)(uintptr_t)g_l2_shared | DESC_TABLE;
+        g_l1_table[gib] = (uint64_t)(uintptr_t)g_l2[gib] | DESC_TABLE;
     }
-#endif
 
     /* MAIR_EL1: attr0 = 0x00 (Device-nGnRnE), attr1 = 0xFF (Normal,
        write-back, read/write-allocate и для внутреннего, и для внешнего кэша) */
@@ -168,13 +181,13 @@ void mmu_init(void) {
                    (1ULL  << 23)  |
                    (0ULL  << 32);   /* IPS = 0: физические адреса 32 бита */
 
-    early_fb_band(26, 255, 255, 255);   /* таблицы построены */
+    early_con_puts("  karta postroena\n");
 
     __asm__ volatile ("msr mair_el1, %0"  :: "r"(mair));
     __asm__ volatile ("msr tcr_el1, %0"   :: "r"(tcr));
     __asm__ volatile ("msr ttbr0_el1, %0" :: "r"((uint64_t)(uintptr_t)g_l1_table));
 
-    early_fb_band(27, 255, 200, 0);     /* регистры трансляции заполнены */
+    early_con_puts("  registry zapolneny\n");
 
     /* Таблицы должны быть видны обходчику до того, как он начнёт по ним
        ходить. MMU сейчас выключен, значит записи шли прямо в ОЗУ, но
@@ -203,7 +216,7 @@ void mmu_init(void) {
      * 0x30D00800 — те биты, которые архитектура требует держать
      * единицами; всё остальное намеренно ноль. В частности, выключены
      * проверка выравнивания и обратный порядок байтов. */
-    early_fb_band(28, 0, 200, 255);     /* TLB сброшен, включаем */
+    early_con_puts("  TLB sbroshen, vklyuchaem\n");
 
     uint64_t sctlr = 0x30D00800ULL
                    | (1ULL << 0)     /* M — включить MMU              */
@@ -214,9 +227,7 @@ void mmu_init(void) {
 
     g_mmu_on = 1;
 
-    /* Полоса 29: мы пережили включение. Если её нет, а полоса 28 есть —
-       падение произошло ровно на этой инструкции. */
-    early_fb_band(29, 0, 255, 128);
+    early_con_puts("  vklyuchenie perezhito\n");
 }
 
 /* Размер строки кэша данных из CTR_EL0. Поле DminLine — это log2 от

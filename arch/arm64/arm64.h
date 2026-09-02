@@ -63,7 +63,7 @@ void uart_report_platform(void); /* что удалось выяснить пр�
 /* Без MMU все обращения к ОЗУ трактуются как Device-nGnRnE (некэшируемые),
  * и отрисовка кадра в фреймбуфер получается в десятки раз медленнее.
  * Поэтому включаем MMU с плоским (identity) отображением 0..4 ГиБ. */
-void mmu_init(void);
+void mmu_init(const void *dtb);
 int  mmu_enabled(void);
 
 /* Обслуживание кэша для DMA. Устройство (ramfb-дисплей, virtio) читает
@@ -96,10 +96,12 @@ void early_con_hex(uint64_t v);
 void ramoops_init(const void *dtb);
 void ramoops_putc(char c);
 void ramoops_write(const char *s);
+int  ramoops_region(uint64_t *base, uint32_t *size);
 #else
 #define ramoops_init(d)   do { (void)(d); } while (0)
 #define ramoops_putc(c)   do { (void)(c); } while (0)
 #define ramoops_write(s)  do { (void)(s); } while (0)
+#define ramoops_region(b, s) (0)
 #endif
 void arch_dcache_invalidate(void *addr, size_t len);
 
