@@ -19,12 +19,20 @@
  *   или EL1 (QEMU virt по умолчанию). Обрабатываем оба случая.
  */
 
-#ifdef CONFIG_LOG_RAMOOPS
-/* Только ради BOARD_PSTORE_CONSOLE_ADDR. Заголовок платы состоит из одних
+#if defined(CONFIG_LOG_RAMOOPS) || defined(CONFIG_EARLY_FB_MARKS)
+/* Ради BOARD_PSTORE_CONSOLE_ADDR и параметров экрана. Заголовок платы состоит из одних
    #define, поэтому ассемблер его переваривает; boards/board.h — уже нет, он
    тянет за собой объявления на C. Возможность включается лишь на платах, у
    которых такая область есть, так что имя платы здесь не гадание. */
 #include "boards/mido.h"
+#endif
+
+#ifdef CONFIG_EARLY_FB_MARKS
+/* Высота полосы в строках экрана. Шестьдесят четыре — видно с другого
+   конца комнаты, а закрашивается меньше чем за десятую долю секунды даже
+   побайтно при выключенном кэше. */
+#define EARLY_BAND_H      64
+#define EARLY_BAND_BYTES  (BOARD_FB_STRIDE * EARLY_BAND_H)
 #endif
 
 .section ".text.boot", "ax"
@@ -114,6 +122,15 @@ _boot:
     str     w11, [x10, #8]
 #endif
 
+#ifdef CONFIG_EARLY_FB_MARKS
+    /* полоса 0, красная: управление получено */
+    mov     x21, #0
+    movz    w22, #255
+    movz    w23, #0
+    movz    w24, #0
+    bl      _early_band
+#endif
+
     /* ---------------- EL2 -> EL1 (если стартовали в EL2) -------------- */
     mrs     x1, CurrentEL
     lsr     x1, x1, #2
@@ -190,6 +207,15 @@ _reloc_loop:
     b       _reloc_loop
 
 _relocated:
+#ifdef CONFIG_EARLY_FB_MARKS
+    /* полоса 1, зелёная: образ перемещён по фактическому адресу */
+    mov     x21, #1
+    movz    w22, #0
+    movz    w23, #255
+    movz    w24, #0
+    bl      _early_band
+#endif
+
     /* ---------------- Стек ------------------------------------------- */
     /* Аналог "mov esp, stack_top" из x86-шного boot.asm. adrp+add вместо
        ldr =symbol: не нужен литерал-пул и образ остаётся позиционно
@@ -213,6 +239,14 @@ _relocated:
     str     xzr, [x1], #8
     b       1b
 2:
+#ifdef CONFIG_EARLY_FB_MARKS
+    /* полоса 2, синяя: .bss обнулён, стек поставлен */
+    mov     x21, #2
+    movz    w22, #0
+    movz    w23, #96
+    movz    w24, #255
+    bl      _early_band
+#endif
 
     /* ---------------- Таблица векторов исключений --------------------- */
     adrp    x1, _vectors
@@ -224,6 +258,15 @@ _relocated:
     /* Сигнатура kmain() общая с x86, менять её не нужно: там, где на x86
        лежит указатель на multiboot_info, здесь лежит указатель на DTB.
        magic передаём нулевой — ядро его и так игнорирует. */
+
+#ifdef CONFIG_EARLY_FB_MARKS
+    /* полоса 3, белая: уходим в C */
+    mov     x21, #3
+    movz    w22, #255
+    movz    w23, #255
+    movz    w24, #255
+    bl      _early_band
+#endif
     mov     x1, x0                  /* arg1 = DTB   */
     mov     x0, #0                  /* arg0 = magic */
     bl      kmain
@@ -231,6 +274,35 @@ _relocated:
 _park:
     wfi
     b       _park
+
+#ifdef CONFIG_EARLY_FB_MARKS
+/* ---------------- Полосы на экране ------------------------------------
+ *
+ * Закрасить полосу во весь экран. Номер полосы в x21, цвет побайтно в
+ * w22/w23/w24 (красный, зелёный, синий).
+ *
+ * Экран трогаем напрямую, потому что загрузчик уже настроил дисплей ради
+ * своего логотипа и оставил его работающим. Формат — три байта на пиксель,
+ * строки уложены вплотную, так что полоса это просто непрерывный кусок
+ * памяти: шаг строки, умноженный на высоту полосы.
+ *
+ * Стека здесь ещё нет, поэтому подпрограмма не сохраняет ничего и портит
+ * только x25-x27. x0 (дерево устройств) не трогаем принципиально.
+ */
+_early_band:
+    movz    x25, #(BOARD_FB_ADDR & 0xFFFF)
+    movk    x25, #(BOARD_FB_ADDR >> 16), lsl #16
+    movz    x26, #(EARLY_BAND_BYTES & 0xFFFF)
+    movk    x26, #(EARLY_BAND_BYTES >> 16), lsl #16
+    mul     x27, x21, x26
+    add     x25, x25, x27
+1:  strb    w22, [x25], #1
+    strb    w23, [x25], #1
+    strb    w24, [x25], #1
+    subs    x26, x26, #3
+    b.gt    1b
+    ret
+#endif
 
 #ifdef CONFIG_LOG_RAMOOPS
 /* ---------------- Вспомогательное для ранней метки --------------------
