@@ -132,7 +132,7 @@ void hal_input_init(void) {
     if (g_device_count == 0) {
         g_touch_ok = ft5x06_init();
 
-#ifdef CONFIG_DEBUG_AUTOFASTBOOT
+#ifdef CONFIG_DEBUG_TOUCH_PROBE
         /* Отладочный круг замыкается ВСЕГДА, а не только при отказе.
          *
          * Первая попытка это и подвела: система осталась работать, потому
@@ -142,9 +142,14 @@ void hal_input_init(void) {
          * журналом. Признак включается только сборкой для отладки. */
         early_con_puts(g_touch_ok ? "posdev: TACHSKRIN PODNYALSYA\n"
                                   : "posdev: tachskrin ne podnyalsya\n");
+        hal_time_delay_ms(2500);
+        early_con_puts("posdev: zhurnal zapisan, perezagruzite telefon\n");
         hal_time_delay_ms(1500);
-        early_con_puts("posdev: uhozhu v zagruzchik za zhurnalom\n");
-        msm_reboot_bootloader();
+
+        /* Дышащий красный вместо попытки уйти в загрузчик самим: та
+           подвешивала аппарат, а этот сигнал человеку понятен без
+           объяснений. */
+        early_fb_alert();
 #endif
 
         if (g_touch_ok) {

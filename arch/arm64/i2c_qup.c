@@ -53,10 +53,17 @@
 #define QUP_IN_FIFO_BASE        0x218
 #define QUP_I2C_CLK_CTL         0x400
 #define QUP_I2C_STATUS          0x404
+/* Делитель скорости шины: считается при подъёме блока, а записывается уже
+ * после перевода его в работу — так делает драйвер изготовителя. */
+static uint32_t g_clk_ctl = 0;
+
+#define QUP_OPERATIONAL_RESET   0xFF0        /* залипшие флаги блока   */
+#define QUP_I2C_STATUS_RESET    0xFFFFFC     /* залипшие флаги шины    */
 
 /* Регистр состояния блока */
 #define QUP_STATE_MASK          0x3
 #define QUP_STATE_VALID         (1u << 2)
+#define QUP_I2C_MAST_GEN        (1u << 4)
 #define QUP_RESET_STATE         0
 #define QUP_RUN_STATE           1
 #define QUP_PAUSE_STATE         3
@@ -123,11 +130,24 @@ static int set_state(uint64_t base, uint32_t state) {
      * состояние и оставался в сбросе, а прежняя проверка этого не
      * замечала и рапортовала успех. Дальше мы наливали данные в очередь
      * стоящему блоку и ждали, пока он их отдаст. */
+    /* Условие взято у изготовителя (драйвер загрузчика для этого же
+       процессора): требуется, чтобы биты запрошенного состояния были
+       ВЗВЕДЕНЫ вместе с признаком достоверности, а не чтобы поле было в
+       точности равно запрошенному. */
     for (int i = 0; i < POLL_LIMIT; i++) {
         uint32_t st = mmio_read32(base + QUP_STATE);
-        if ((st & QUP_STATE_VALID) && (st & QUP_STATE_MASK) == state)
+        if ((st & (QUP_STATE_VALID | state)) == (QUP_STATE_VALID | state))
             return 1;
     }
+    return 0;
+}
+
+/* Дождаться, пока блок объявит себя ведущим на шине. Загрузчик делает это
+ * перед каждой сменой состояния, и не зря: пока признак не поднят, блок в
+ * работу не переходит. */
+static int wait_master(uint64_t base) {
+    for (int i = 0; i < POLL_LIMIT; i++)
+        if (mmio_read32(base + QUP_STATE) & QUP_I2C_MAST_GEN) return 1;
     return 0;
 }
 
@@ -150,14 +170,24 @@ static int wait_in_data(uint64_t base) {
 /* core_hz — частота, которой тактуется сам блок (у нас 19.2 МГц от кварца),
  * bus_hz — желаемая скорость шины (400 кГц). */
 int i2c_qup_init(uint64_t base, uint32_t core_hz, uint32_t bus_hz) {
-    /* Полный сброс блока: после загрузчика он может быть в любом
-       состоянии, а нам нужно предсказуемое. */
+    /*
+     * ПОСЛЕДОВАТЕЛЬНОСТЬ ВЗЯТА У ИЗГОТОВИТЕЛЯ и повторена по шагам.
+     *
+     * Порядок здесь не украшение. Раньше мы делали примерно то же, но
+     * по-своему, и блок отказывался переходить в работу: состояние
+     * оставалось "сброс", хотя ошибок не возникало. Драйвер загрузчика
+     * для ЭТОГО ЖЕ процессора делает так:
+     *
+     *   сброс -> дождаться -> обнулить настройку -> сбросить залипшие
+     *   флаги -> разрешить ошибки -> задать настройку -> ОБНУЛИТЬ
+     *   управление тактом шины -> сбросить состояние шины
+     *
+     * Обнуление настройки перед её заданием и обнуление такта шины —
+     * ровно те два шага, которых у нас не было.
+     */
     mmio_write32(base + QUP_SW_RESET, 1);
     dsb_sy();
 
-    /* После сброса блок сам приходит в состояние RESET; дожидаемся, пока
-       он сообщит, что состояние достоверно. Если не дождались — блок не
-       тактируется, и дальше идти бессмысленно. */
     if (!wait_state_valid(base)) {
         uart_write("i2c: blok ne otvechaet posle sbrosa, base=");
         uart_write_hex(base);
@@ -165,32 +195,25 @@ int i2c_qup_init(uint64_t base, uint32_t core_hz, uint32_t bus_hz) {
         return 0;
     }
 
-    if (!set_state(base, QUP_RESET_STATE)) return 0;
+    mmio_write32(base + QUP_CONFIG, 0);
+    mmio_write32(base + QUP_OPERATIONAL, QUP_OPERATIONAL_RESET);
+    mmio_write32(base + QUP_ERROR_FLAGS_EN, 0x7);
 
-    /* Ядро работает как I2C, слово — восемь бит. */
     mmio_write32(base + QUP_CONFIG, QUP_CONFIG_MINI_CORE_I2C | QUP_CONFIG_N_8BIT);
 
-    /* Простые очереди с упаковкой байтов в слова. */
-    mmio_write32(base + QUP_IO_MODE, QUP_IO_MODE_PACK_EN | QUP_IO_MODE_UNPACK_EN);
+    /* Управление тактом шины пока обнуляем; настоящее значение блок
+       получит уже в работе — так делает загрузчик. */
+    mmio_write32(base + QUP_I2C_CLK_CTL, 0);
+    mmio_write32(base + QUP_I2C_STATUS, QUP_I2C_STATUS_RESET);
+    dsb_sy();
 
-    /* Делитель скорости шины. Формула аппаратуры: за один период на шине
-       блок отсчитывает (делитель + 3) * 2 своих тактов. Отсюда обратное
-       выражение. Верхние восемь бит — задержка удержания данных, значение 3
-       стандартное для fast mode. */
+    /* Делитель скорости шины. Формула изготовителя: за период на шине блок
+       отсчитывает (делитель + 3) * 2 своих тактов. Верхние биты — задержка
+       удержания данных, тройка стандартна для быстрого режима. */
     uint32_t fs_div = (core_hz / bus_hz) / 2;
     fs_div = (fs_div > 3) ? (fs_div - 3) : 0;
     if (fs_div > 0xFF) fs_div = 0xFF;
-    mmio_write32(base + QUP_I2C_CLK_CTL, (3u << 8) | fs_div);
-
-    /* Сбрасываем залипшие флаги предыдущего владельца блока. Значения
-       взяты из драйвера загрузчика для этого же процессора. */
-    mmio_write32(base + QUP_OPERATIONAL, 0xFF0);
-    mmio_write32(base + QUP_I2C_STATUS, 0xFFFFFC);
-
-    /* Ошибки шины хотим видеть все. */
-    mmio_write32(base + QUP_ERROR_FLAGS_EN, 0x7);
-    mmio_write32(base + QUP_OPERATIONAL_MASK, 0);
-    dsb_sy();
+    g_clk_ctl = ((3u & 0x7) << 8) | fs_div;
 
     return 1;
 }
@@ -339,6 +362,12 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
     }
     early_con_puts("\n");
 
+    /* Блок должен объявить себя ведущим — иначе в работу он не пойдёт. */
+    if (!wait_master(base)) {
+        i2c_qup_dump(base, "ne stal vedushchim");
+        return 0;
+    }
+
     if (!set_state(base, QUP_RESET_STATE)) return 0;
 
     /*
@@ -379,6 +408,12 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
         i2c_qup_dump(base, "ne poshyol v rabotu");
         return 0;
     }
+    /* ТАКТ ШИНЫ ЗАДАЁТСЯ ЗДЕСЬ, а не при подъёме блока. Так делает
+       загрузчик: при подъёме он обнуляет этот регистр и записывает
+       настоящее значение только после перевода блока в работу. */
+    mmio_write32(base + QUP_I2C_CLK_CTL, g_clk_ctl);
+    dsb_sy();
+
     i2c_qup_dump(base, "posle puska");
 
     if (!push_out(base, out, n)) {
