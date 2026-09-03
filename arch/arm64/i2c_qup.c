@@ -42,9 +42,11 @@
 #define QUP_ERROR_FLAGS_EN      0x020
 #define QUP_OPERATIONAL_MASK    0x028
 #define QUP_HW_VERSION          0x030
-#define QUP_MX_OUTPUT_CNT       0x100
+#define QUP_MX_OUTPUT_CNT       0x100   /* только блочный режим */
+#define QUP_MX_WRITE_CNT        0x150   /* режим очередей: сколько выдать */
 #define QUP_OUT_FIFO_BASE       0x110
-#define QUP_MX_INPUT_CNT        0x200
+#define QUP_MX_INPUT_CNT        0x200   /* только блочный режим */
+#define QUP_MX_READ_CNT         0x208   /* режим очередей: сколько принять */
 #define QUP_IN_FIFO_BASE        0x218
 #define QUP_I2C_CLK_CTL         0x400
 #define QUP_I2C_STATUS          0x404
@@ -59,6 +61,7 @@
 /* Настройка ядра */
 #define QUP_CONFIG_MINI_CORE_I2C (2u << 8)
 #define QUP_CONFIG_N_8BIT        7u        /* число бит в слове минус один */
+#define QUP_CONFIG_NO_INPUT      (1u << 7) /* передача без чтения          */
 
 /* Режим очередей. Нули в полях режима означают простой FIFO — без блочной
  * передачи и без DMA. PACK/UNPACK заставляют блок упаковывать байты в
@@ -106,9 +109,23 @@ static int wait_state_valid(uint64_t base) {
 
 static int set_state(uint64_t base, uint32_t state) {
     if (!wait_state_valid(base)) return 0;
+
     mmio_write32(base + QUP_STATE, state);
     dsb_sy();
-    return wait_state_valid(base);
+
+    /* Ждём, пока блок ДЕЙСТВИТЕЛЬНО окажется в запрошенном состоянии, а не
+     * просто сообщит, что его состояние достоверно.
+     *
+     * Разница не умозрительная: блок отказывался переходить в рабочее
+     * состояние и оставался в сбросе, а прежняя проверка этого не
+     * замечала и рапортовала успех. Дальше мы наливали данные в очередь
+     * стоящему блоку и ждали, пока он их отдаст. */
+    for (int i = 0; i < POLL_LIMIT; i++) {
+        uint32_t st = mmio_read32(base + QUP_STATE);
+        if ((st & QUP_STATE_VALID) && (st & QUP_STATE_MASK) == state)
+            return 1;
+    }
+    return 0;
 }
 
 /* Ждём, пока в выходной очереди появится место. */
@@ -161,6 +178,11 @@ int i2c_qup_init(uint64_t base, uint32_t core_hz, uint32_t bus_hz) {
     fs_div = (fs_div > 3) ? (fs_div - 3) : 0;
     if (fs_div > 0xFF) fs_div = 0xFF;
     mmio_write32(base + QUP_I2C_CLK_CTL, (3u << 8) | fs_div);
+
+    /* Сбрасываем залипшие флаги предыдущего владельца блока. Значения
+       взяты из драйвера загрузчика для этого же процессора. */
+    mmio_write32(base + QUP_OPERATIONAL, 0xFF0);
+    mmio_write32(base + QUP_I2C_STATUS, 0xFFFFFC);
 
     /* Ошибки шины хотим видеть все. */
     mmio_write32(base + QUP_ERROR_FLAGS_EN, 0x7);
@@ -267,18 +289,40 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
         out[n++] = (uint8_t)rlen;
     }
 
-    /* Счётчики: сколько байт блок должен выдать наружу и сколько принять.
-     *
-     * Старший бит (QUP_MX_CONFIG_DURING_RUN) здесь НЕ ставится, и это
-     * важно. Он означает "счётчики меняются, не покидая рабочего
-     * состояния", и драйвер ядра выставляет его только для продолжения
-     * уже идущей передачи; для первой он всегда ноль. Мы же ставили его
-     * всегда — то есть заявляли блоку, что он уже работает, когда он
-     * ещё стоял. Наша передача всегда одна и всегда первая. */
     if (!set_state(base, QUP_RESET_STATE)) return 0;
 
-    mmio_write32(base + QUP_MX_OUTPUT_CNT, (uint32_t)n);
-    mmio_write32(base + QUP_MX_INPUT_CNT, (uint32_t)(rlen > 0 ? rlen : 0));
+    /*
+     * РЕЖИМ ОЧЕРЕДЕЙ, А НЕ БЛОЧНЫЙ — и счётчики у них РАЗНЫЕ.
+     *
+     * Здесь была ошибка, из-за которой блок вообще не начинал передачу.
+     * У него два способа обмена: короткие посылки через очереди и длинные
+     * блоками. Для каждого свои счётчики, и перепутать их нельзя:
+     *
+     *     очереди : QUP_MX_WRITE_CNT (0x150), QUP_MX_READ_CNT  (0x208)
+     *     блоками : QUP_MX_OUTPUT_CNT (0x100), QUP_MX_INPUT_CNT (0x200)
+     *
+     * Мы заполняли счётчики блочного режима, оставаясь в режиме очередей.
+     * Блок покорно ждал блочную передачу, которой не было, — стоял в
+     * сбросе, очередь не пустела, а ошибок не возникало, потому что и
+     * передачи не было.
+     *
+     * Проверено по двум независимым источникам: драйвер загрузчика для
+     * этого же процессора прямо помечает счётчик записи как "valid/used
+     * only in block mode", а драйвер ядра в режиме очередей обнуляет
+     * блочные счётчики и заполняет очередные.
+     *
+     * Наши посылки короткие всегда (девять байт на чтение регистра), так
+     * что блочный режим не нужен вовсе.
+     */
+    uint32_t cfg = QUP_CONFIG_MINI_CORE_I2C | QUP_CONFIG_N_8BIT;
+    if (rlen == 0) cfg |= QUP_CONFIG_NO_INPUT;   /* читать нечего */
+    mmio_write32(base + QUP_CONFIG, cfg);
+    mmio_write32(base + QUP_IO_MODE, QUP_IO_MODE_PACK_EN | QUP_IO_MODE_UNPACK_EN);
+
+    mmio_write32(base + QUP_MX_OUTPUT_CNT, 0);
+    mmio_write32(base + QUP_MX_WRITE_CNT,  (uint32_t)n);
+    mmio_write32(base + QUP_MX_INPUT_CNT,  0);
+    mmio_write32(base + QUP_MX_READ_CNT,   (uint32_t)(rlen > 0 ? rlen : 0));
     dsb_sy();
 
     if (!set_state(base, QUP_RUN_STATE)) return 0;
