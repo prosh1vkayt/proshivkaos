@@ -104,6 +104,27 @@ int ft5x06_init(void) {
           корпуса сам по себе ничей и остаётся обычным GPIO, пока ему не
           назначена работа. Контроллер при этом честно поднимается и
           честно передаёт — в никуда. */
+    /* СНАЧАЛА СМОТРИМ, ЖИВА ЛИ ШИНА.
+     *
+     * Обе линии I2C подтянуты к питанию внешними резисторами, и питаются
+     * они от того же источника, что и сам тачскрин (vcc_i2c). Если оно не
+     * подано, подтяжек нет: линии не в единице, контроллер считает шину
+     * занятой и не начинает передачу вовсе — очередь не пустеет, а
+     * ошибок при этом никаких, потому что и передачи не было.
+     *
+     * Читаем уровни как обычные входы без подтяжки. Обе единицы —
+     * шина свободна и питание есть, виноваты мы. Ноль — питания нет, и
+     * дальше без управления источниками не продвинуться. */
+    tlmm_gpio_input(BOARD_I2C_TS_SDA_GPIO, 0);
+    tlmm_gpio_input(BOARD_I2C_TS_SCL_GPIO, 0);
+    hal_time_delay_ms(1);
+
+    early_con_puts("TS: linii shiny SDA=");
+    early_con_puts(tlmm_gpio_get(BOARD_I2C_TS_SDA_GPIO) ? "1" : "0");
+    early_con_puts(" SCL=");
+    early_con_puts(tlmm_gpio_get(BOARD_I2C_TS_SCL_GPIO) ? "1" : "0");
+    early_con_puts(" (1 1 = shina svobodna i pitanie est)\n");
+
     early_con_puts("TS: vyvody shiny do ");
     early_con_hex((uint64_t)tlmm_gpio_cfg(BOARD_I2C_TS_SDA_GPIO));
 

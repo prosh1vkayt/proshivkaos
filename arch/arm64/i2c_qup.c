@@ -268,17 +268,37 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
     }
 
     /* Счётчики: сколько байт блок должен выдать наружу и сколько принять.
-       Старший бит разрешает менять их, не покидая рабочего состояния. */
+     *
+     * Старший бит (QUP_MX_CONFIG_DURING_RUN) здесь НЕ ставится, и это
+     * важно. Он означает "счётчики меняются, не покидая рабочего
+     * состояния", и драйвер ядра выставляет его только для продолжения
+     * уже идущей передачи; для первой он всегда ноль. Мы же ставили его
+     * всегда — то есть заявляли блоку, что он уже работает, когда он
+     * ещё стоял. Наша передача всегда одна и всегда первая. */
     if (!set_state(base, QUP_RESET_STATE)) return 0;
 
-    mmio_write32(base + QUP_MX_OUTPUT_CNT, QUP_MX_CONFIG_DURING_RUN | (uint32_t)n);
-    mmio_write32(base + QUP_MX_INPUT_CNT,
-                 QUP_MX_CONFIG_DURING_RUN | (uint32_t)(rlen > 0 ? rlen : 0));
+    mmio_write32(base + QUP_MX_OUTPUT_CNT, (uint32_t)n);
+    mmio_write32(base + QUP_MX_INPUT_CNT, (uint32_t)(rlen > 0 ? rlen : 0));
     dsb_sy();
 
     if (!set_state(base, QUP_RUN_STATE)) return 0;
 
     if (!push_out(base, out, n)) {
+        /* Снимок состояния блока. Очередь не опустела — значит он принял
+           данные, но не передал их. Причина видна по этим регистрам:
+           STATE говорит, работает ли блок вообще, OPERATIONAL — чего он
+           ждёт, ERROR_FLAGS — не сорвалось ли что-то, HW_VERSION
+           подтверждает, что мы вообще разговариваем с тем блоком. */
+        early_con_puts("I2C: STATE ");
+        early_con_hex((uint64_t)mmio_read32(base + QUP_STATE));
+        early_con_puts(" OP ");
+        early_con_hex((uint64_t)mmio_read32(base + QUP_OPERATIONAL));
+        early_con_puts("\n     ERR ");
+        early_con_hex((uint64_t)mmio_read32(base + QUP_ERROR_FLAGS));
+        early_con_puts(" HW ");
+        early_con_hex((uint64_t)mmio_read32(base + QUP_HW_VERSION));
+        early_con_puts("\n");
+
         uart_write("i2c: ochered vyvoda ne osvobodilas\n");
         set_state(base, QUP_RESET_STATE);
         return 0;
