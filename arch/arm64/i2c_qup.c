@@ -96,8 +96,12 @@ static uint32_t g_clk_ctl = 0;
 #define QUP_I2C_ARB_LOST        (1u << 4)
 #define QUP_I2C_BUS_ERROR       (1u << 2)
 #define QUP_I2C_INVALID_WRITE   (1u << 5)
-#define QUP_I2C_FAILED_MASK     (QUP_I2C_NACK_FLAG | QUP_I2C_ARB_LOST | \
-                                 QUP_I2C_BUS_ERROR | QUP_I2C_INVALID_WRITE)
+/* Маска ошибок шины — та же, что у драйвера ядра (I2C_STATUS_ERROR_MASK).
+ * Наша прежняя была уже: она ловила неподтверждение, потерю арбитража,
+ * ошибку шины и недопустимую запись, но пропускала остальные разряды, а
+ * там среди прочего недопустимая метка и неверная последовательность
+ * чтения — ровно то, на что блок жаловался. */
+#define QUP_I2C_FAILED_MASK     0x38000FCu
 
 /* Командные метки протокола версии 2 */
 #define TAG_START               0x81
@@ -342,46 +346,22 @@ static int check_bus(uint64_t base) {
  * rlen == 0 превращает вызов в обычную запись, wlen == 0 — в чистое чтение.
  * Возвращает 1 при успехе.
  */
-int i2c_qup_xfer(uint64_t base, uint8_t addr,
-                  const uint8_t *wbuf, int wlen,
-                  uint8_t *rbuf, int rlen) {
-    if (wlen < 0 || rlen < 0 || wlen > XFER_MAX || rlen > XFER_MAX) return 0;
-    if (wlen == 0 && rlen == 0) return 0;
-
-    /* Собираем «программу» транзакции целиком, чтобы затем залить её в
-       очередь одним потоком. */
-    uint8_t out[XFER_MAX + 8];
-    int n = 0;
-
-    if (wlen > 0) {
-        out[n++] = TAG_START;
-        out[n++] = (uint8_t)(addr << 1);            /* младший бит 0 — запись */
-        /* Если после записи будет чтение, стоп ставить нельзя: нужен
-           повторный старт, иначе устройство потеряет выбранный регистр. */
-        out[n++] = (rlen > 0) ? TAG_DATAWR : TAG_DATAWR_STOP;
-        out[n++] = (uint8_t)wlen;
-        for (int i = 0; i < wlen; i++) out[n++] = wbuf[i];
-    }
-
-    if (rlen > 0) {
-        out[n++] = TAG_START;
-        out[n++] = (uint8_t)((addr << 1) | 1);      /* младший бит 1 — чтение */
-        out[n++] = TAG_DATARD_STOP;
-        out[n++] = (uint8_t)rlen;
-    }
-
-    /* Сама посылка побайтно. Метки задают, что блок должен сделать:
-       0x81 — старт с адресом, 0x82/0x83 — передать столько-то байт (без
-       остановки и с ней), 0x87 — принять столько-то и остановиться.
-       Видя эти байты, можно проверить программу передачи глазами, не
-       гадая, что мы на самом деле отправили. */
-    early_con_puts("I2C posylka:");
-    for (int i = 0; i < n; i++) {
-        early_con_puts(" ");
-        early_con_hex8(out[i]);
-    }
-    early_con_puts("\n");
-
+/* Одна транзакция блока: заполнить очередь готовой посылкой и, если ждём
+ * ответ, вычитать его.
+ *
+ * ПОЧЕМУ ЭТО ОТДЕЛЬНАЯ ФУНКЦИЯ. Запись регистра и чтение его значения —
+ * две разные транзакции блока, а не одна длинная. Ядро обрабатывает
+ * каждое сообщение своим циклом: сброс, режим, счётчики, пуск, пауза,
+ * заполнение очереди, пуск. Мы же сваливали обе посылки в одну очередь,
+ * и блок отвечал ошибкой в состоянии шины: он получал за одной
+ * транзакцией начало другой, чего протокол не допускает.
+ *
+ * Повторный старт при этом не теряется: первая посылка заканчивается
+ * меткой "передать без остановки", то есть шина остаётся за нами, и
+ * вторая продолжает начатое.
+ */
+static int run_block(uint64_t base, const uint8_t *tags, int tlen,
+                     uint8_t *rbuf, int rlen) {
     /* Блок должен объявить себя ведущим — иначе в работу он не пойдёт. */
     if (!wait_master(base)) {
         i2c_qup_dump(base, "ne stal vedushchim");
@@ -390,25 +370,14 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
 
     if (!set_state(base, QUP_RESET_STATE)) return 0;
 
-    /*
-     * ПОРЯДОК ПОВТОРЯЕТ ДРАЙВЕР ЯДРА, и каждый шаг здесь на своём месте.
-     *
-     * Сначала режим: обе стороны работают очередями, поэтому блочные
-     * счётчики обнуляются, а в режиме включается переупаковка байтов.
-     * Потом счётчики очередей и настройка. И только затем пуск.
-     *
-     * Самое неочевидное — что очередь заполняется В ПАУЗЕ, а не в работе.
-     * Блок, переведённый в работу, начинает передачу немедленно, и
-     * досыпать ему данные уже поздно: он успевает уйти вперёд. Поэтому
-     * после пуска его сразу ставят на паузу, наполняют очередь целиком и
-     * снова пускают — тогда вся посылка уходит одним куском.
-     */
+    /* Режим: обе стороны работают очередями, поэтому блочные счётчики
+       обнуляются, а в режиме включается переупаковка байтов. */
     mmio_write32(base + QUP_MX_OUTPUT_CNT, 0);
     mmio_write32(base + QUP_MX_INPUT_CNT, 0);
     mmio_write32(base + QUP_IO_MODE, QUP_IO_MODE_PACK_EN | QUP_IO_MODE_UNPACK_EN);
 
     uint32_t cfg = QUP_CONFIG_MINI_CORE_I2C | QUP_CONFIG_N_8BIT;
-    mmio_write32(base + QUP_MX_WRITE_CNT, (uint32_t)n);
+    mmio_write32(base + QUP_MX_WRITE_CNT, (uint32_t)tlen);
     if (rlen > 0) mmio_write32(base + QUP_MX_READ_CNT, (uint32_t)rlen);
     else          cfg |= QUP_CONFIG_NO_INPUT;
     mmio_write32(base + QUP_CONFIG, cfg);
@@ -423,44 +392,89 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
     mmio_write32(base + QUP_I2C_CLK_CTL, g_clk_ctl);
     dsb_sy();
 
+    /* Очередь наполняется В ПАУЗЕ. Блок в работе начинает передачу сразу,
+       и досыпать ему данные уже поздно. */
     if (!set_state(base, QUP_PAUSE_STATE)) {
         i2c_qup_dump(base, "ne vstal na pauzu");
         return 0;
     }
 
-    if (!push_out(base, out, n)) {
+    if (!push_out(base, tags, tlen)) {
         i2c_qup_dump(base, "ochered ne osvobodilas");
-        uart_write("i2c: ochered vyvoda ne osvobodilas\n");
         set_state(base, QUP_RESET_STATE);
         return 0;
     }
 
-    /* Очередь полна — отпускаем блок, и он отыгрывает всю посылку. */
+    /* Очередь полна — отпускаем блок, и он отыгрывает посылку. */
     if (!set_state(base, QUP_RUN_STATE)) {
         i2c_qup_dump(base, "ne vozobnovil rabotu");
         return 0;
     }
 
-    i2c_qup_dump(base, "posle vydachi");
-
     if (rlen > 0) {
         if (!pull_in(base, rbuf, rlen)) {
             i2c_qup_dump(base, "otvet ne prishyol");
-            set_state(base, QUP_RESET_STATE);
             return 0;
         }
-        i2c_qup_dump(base, "otvet prinyat");
     } else {
-        /* Для чистой записи дожидаемся, пока блок отыграет всё, что мы ему
-           дали: иначе следующая транзакция начнётся поверх незавершённой. */
+        /* Чистая запись: ждём, пока блок отыграет всё, что получил. */
         int done = 0;
         for (int i = 0; i < POLL_LIMIT; i++) {
             if (mmio_read32(base + QUP_OPERATIONAL) & QUP_MX_OUTPUT_DONE) { done = 1; break; }
         }
-        if (!done) { set_state(base, QUP_RESET_STATE); return 0; }
+        if (!done) {
+            i2c_qup_dump(base, "vydacha ne zavershilas");
+            return 0;
+        }
     }
 
-    int ok = check_bus(base);
+    return check_bus(base);
+}
+
+int i2c_qup_xfer(uint64_t base, uint8_t addr,
+                  const uint8_t *wbuf, int wlen,
+                  uint8_t *rbuf, int rlen) {
+    if (wlen < 0 || rlen < 0 || wlen > XFER_MAX || rlen > XFER_MAX) return 0;
+    if (wlen == 0 && rlen == 0) return 0;
+
+    uint8_t tags[XFER_MAX + 8];
+    int ok = 1;
+
+    /* Первая транзакция: передать данные (обычно номер регистра).
+     *
+     * Если следом будет чтение, останавливать шину нельзя — нужен
+     * повторный старт, иначе устройство забудет выбранный регистр.
+     * Поэтому метка "передать без остановки". */
+    if (wlen > 0) {
+        int n = 0;
+        tags[n++] = TAG_START;
+        tags[n++] = (uint8_t)(addr << 1);
+        tags[n++] = (rlen > 0) ? TAG_DATAWR : TAG_DATAWR_STOP;
+        tags[n++] = (uint8_t)wlen;
+        for (int i = 0; i < wlen; i++) tags[n++] = wbuf[i];
+
+        early_con_puts("I2C zapis:");
+        for (int i = 0; i < n; i++) { early_con_puts(" "); early_con_hex8(tags[i]); }
+        early_con_puts("\n");
+
+        ok = run_block(base, tags, n, 0, 0);
+    }
+
+    /* Вторая транзакция: принять ответ и отпустить шину. */
+    if (ok && rlen > 0) {
+        int n = 0;
+        tags[n++] = TAG_START;
+        tags[n++] = (uint8_t)((addr << 1) | 1);
+        tags[n++] = TAG_DATARD_STOP;
+        tags[n++] = (uint8_t)rlen;
+
+        early_con_puts("I2C chtenie:");
+        for (int i = 0; i < n; i++) { early_con_puts(" "); early_con_hex8(tags[i]); }
+        early_con_puts("\n");
+
+        ok = run_block(base, tags, n, rbuf, rlen);
+    }
+
     set_state(base, QUP_RESET_STATE);
     return ok;
 }
