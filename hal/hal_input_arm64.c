@@ -45,6 +45,10 @@ __attribute__((weak)) void ft5x06_range(int *max_x, int *max_y) {
 /* Клавиши на выводах TLMM — там же, где и тачскрин: настоящий драйвер в
  * arch/arm64/keys_gpio.c, а здесь заглушки для плат без них. */
 __attribute__((weak)) int  keys_gpio_init(void) { return 0; }
+
+/* Возврат в загрузчик по собственной воле — умеет не всякая плата.
+ * Настоящая реализация в arch/arm64/reboot_msm.c. */
+__attribute__((weak)) void msm_reboot_bootloader(void) { }
 __attribute__((weak)) int  keys_gpio_poll(int *down) { (void)down; return 0; }
 
 /* Коды из linux/input-event-codes.h — virtio-input использует именно их,
@@ -127,6 +131,22 @@ void hal_input_init(void) {
 
     if (g_device_count == 0) {
         g_touch_ok = ft5x06_init();
+
+#ifdef CONFIG_DEBUG_AUTOFASTBOOT
+        /* Отладочный круг замыкается ВСЕГДА, а не только при отказе.
+         *
+         * Первая попытка это и подвела: система осталась работать, потому
+         * что уходила в загрузчик лишь по неудаче, — а узнать, что именно
+         * произошло, было уже нельзя, телефон никуда не возвращался.
+         * Теперь итог печатается и в любом случае возвращаемся за
+         * журналом. Признак включается только сборкой для отладки. */
+        early_con_puts(g_touch_ok ? "posdev: TACHSKRIN PODNYALSYA\n"
+                                  : "posdev: tachskrin ne podnyalsya\n");
+        hal_time_delay_ms(1500);
+        early_con_puts("posdev: uhozhu v zagruzchik za zhurnalom\n");
+        msm_reboot_bootloader();
+#endif
+
         if (g_touch_ok) {
             ft5x06_range(&g_abs_max_x, &g_abs_max_y);
             g_has_abs = 1;

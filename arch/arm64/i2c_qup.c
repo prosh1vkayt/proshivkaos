@@ -44,9 +44,12 @@
 #define QUP_HW_VERSION          0x030
 #define QUP_MX_OUTPUT_CNT       0x100   /* только блочный режим */
 #define QUP_MX_WRITE_CNT        0x150   /* режим очередей: сколько выдать */
+#define QUP_OUT_FIFO_CNT        0x10C
 #define QUP_OUT_FIFO_BASE       0x110
 #define QUP_MX_INPUT_CNT        0x200   /* только блочный режим */
 #define QUP_MX_READ_CNT         0x208   /* режим очередей: сколько принять */
+#define QUP_IN_READ_CUR         0x20C
+#define QUP_IN_FIFO_CNT         0x214
 #define QUP_IN_FIFO_BASE        0x218
 #define QUP_I2C_CLK_CTL         0x400
 #define QUP_I2C_STATUS          0x404
@@ -227,6 +230,41 @@ static int pull_in(uint64_t base, uint8_t *buf, int len) {
     return 1;
 }
 
+/* Подробный снимок блока.
+ *
+ * Печатается на каждом заметном шаге, а не только при отказе. Круг
+ * отладки на этом аппарате длинный — сборка, перезагрузка, чтение
+ * журнала, — и дешевле напечатать лишнее, чем догадываться и ходить
+ * второй раз. Каждый регистр здесь отвечает на свой вопрос:
+ *
+ *   STATE  работает ли блок вообще (младшие два бита) и достоверно ли
+ *          его состояние
+ *   OP     чего он ждёт: заполнена ли очередь передачи, есть ли данные в
+ *          очереди приёма, отработал ли он объявленные счётчики
+ *   ERR    сорвалось ли что-то на уровне блока
+ *   I2C    сорвалось ли что-то на шине: неподтверждение, потеря
+ *          арбитража, ошибка шины
+ *   OCNT   сколько слов сейчас в очереди передачи
+ *   ICNT   сколько слов накопилось в очереди приёма
+ */
+void i2c_qup_dump(uint64_t base, const char *where) {
+    early_con_puts("I2C ");
+    early_con_puts(where);
+    early_con_puts(": ST ");
+    early_con_hex((uint64_t)mmio_read32(base + QUP_STATE));
+    early_con_puts(" OP ");
+    early_con_hex((uint64_t)mmio_read32(base + QUP_OPERATIONAL));
+    early_con_puts("\n     ERR ");
+    early_con_hex((uint64_t)mmio_read32(base + QUP_ERROR_FLAGS));
+    early_con_puts(" I2C ");
+    early_con_hex((uint64_t)mmio_read32(base + QUP_I2C_STATUS));
+    early_con_puts("\n     OCNT ");
+    early_con_hex((uint64_t)mmio_read32(base + QUP_OUT_FIFO_CNT));
+    early_con_puts(" ICNT ");
+    early_con_hex((uint64_t)mmio_read32(base + QUP_IN_FIFO_CNT));
+    early_con_puts("\n");
+}
+
 /* Последнее состояние шины — чтобы показать его при отказе.
  *
  * Это самый ценный из доступных признаков: он разделяет два случая,
@@ -289,6 +327,18 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
         out[n++] = (uint8_t)rlen;
     }
 
+    /* Сама посылка побайтно. Метки задают, что блок должен сделать:
+       0x81 — старт с адресом, 0x82/0x83 — передать столько-то байт (без
+       остановки и с ней), 0x87 — принять столько-то и остановиться.
+       Видя эти байты, можно проверить программу передачи глазами, не
+       гадая, что мы на самом деле отправили. */
+    early_con_puts("I2C posylka:");
+    for (int i = 0; i < n; i++) {
+        early_con_puts(" ");
+        early_con_hex8(out[i]);
+    }
+    early_con_puts("\n");
+
     if (!set_state(base, QUP_RESET_STATE)) return 0;
 
     /*
@@ -325,7 +375,11 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
     mmio_write32(base + QUP_MX_READ_CNT,   (uint32_t)(rlen > 0 ? rlen : 0));
     dsb_sy();
 
-    if (!set_state(base, QUP_RUN_STATE)) return 0;
+    if (!set_state(base, QUP_RUN_STATE)) {
+        i2c_qup_dump(base, "ne poshyol v rabotu");
+        return 0;
+    }
+    i2c_qup_dump(base, "posle puska");
 
     if (!push_out(base, out, n)) {
         /* Снимок состояния блока. Очередь не опустела — значит он принял
@@ -348,13 +402,15 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
         return 0;
     }
 
+    i2c_qup_dump(base, "posle vydachi");
+
     if (rlen > 0) {
         if (!pull_in(base, rbuf, rlen)) {
-            /* Молчание на чтении — самый частый симптом отсутствующего или
-               незапитанного устройства. */
+            i2c_qup_dump(base, "otvet ne prishyol");
             set_state(base, QUP_RESET_STATE);
             return 0;
         }
+        i2c_qup_dump(base, "otvet prinyat");
     } else {
         /* Для чистой записи дожидаемся, пока блок отыграет всё, что мы ему
            дали: иначе следующая транзакция начнётся поверх незавершённой. */

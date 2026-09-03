@@ -93,6 +93,16 @@
 #define BOARD_WDOG_BASE     0x0B017000UL
 #define BOARD_WDOG_EN_OFF   0x08
 
+/* Признак причины перезагрузки в служебной памяти на кристалле. Загрузчик
+ * читает его при старте и по значению решает, куда идти. Из его же
+ * исходников: MSM_SHARED_IMEM_BASE = 0x08600000, смещение 0x65C,
+ * FASTBOOT_MODE = 0x77665500.
+ *
+ * Благодаря этому система умеет возвращаться в загрузчик сама, и круг
+ * отладки через tools/posdev обходится без человека у стола. */
+#define BOARD_IMEM_RESTART_REASON  0x0860065CUL
+#define BOARD_REBOOT_BOOTLOADER    0x77665500UL
+
 #define BOARD_RAM_START  0x10000000UL
 
 #define BOARD_HAS_STATIC_FB 1

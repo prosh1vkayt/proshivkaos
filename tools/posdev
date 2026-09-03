@@ -94,7 +94,8 @@ cmd_build() {
     d=$(find_donor)
     [ -n "$d" ] || die "не найден boot.img прошивки; задайте POSDEV_DONOR"
     say "posdev: собираю с донором $d"
-    ( cd "$ROOT" && make ARCH=arm64 BOARD=mido mido-swap DONOR="$d" ${POSDEV_EXTRA:+EXTRA_CFLAGS="$POSDEV_EXTRA"} ) \
+    ( cd "$ROOT" && make ARCH=arm64 BOARD=mido mido-swap DONOR="$d" \
+        ${POSDEV_EXTRA:+EXTRA_CFLAGS="$POSDEV_EXTRA"} ) \
         || die "сборка не удалась"
     say "posdev: готово: $ROOT/build/arm64-mido/proshivkaos_boot_swap.img"
 }
@@ -143,11 +144,16 @@ cmd_log() {
 }
 
 cmd_cycle() {
+    # Круг замыкается сам. Образ собирается с отладочным признаком, по
+    # которому система, не дождавшись тачскрина, уходит обратно в
+    # загрузчик: она пишет в служебную память причину перезагрузки и
+    # заводит сторожевой таймер. Ручной шаг посередине больше не нужен.
+    POSDEV_EXTRA="${POSDEV_EXTRA:-} -DCONFIG_DEBUG_AUTOFASTBOOT"
+    export POSDEV_EXTRA
     cmd_build
     cmd_run
-    say "posdev: даю системе $WAIT секунд"
+    say "posdev: даю системе $WAIT секунд, она вернётся в загрузчик сама"
     n=0; while [ "$n" -lt "$WAIT" ]; do n=$((n + 1)); sleep 1; done
-    say "posdev: если телефон завис — верните его в загрузчик долгим удержанием питания"
     cmd_log
 }
 

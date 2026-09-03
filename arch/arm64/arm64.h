@@ -84,12 +84,14 @@ void early_con_init(void);
 void early_con_puts(const char *s);
 void early_con_color(const char *s, uint8_t r, uint8_t g, uint8_t b);
 void early_con_hex(uint64_t v);
+void early_con_hex8(uint8_t v);
 #else
 #define early_fb_band(i, r, g, b) do { (void)(i); (void)(r); (void)(g); (void)(b); } while (0)
 #define early_con_init()          do { } while (0)
 #define early_con_puts(s)         do { (void)(s); } while (0)
 #define early_con_color(s, r, g, b) do { (void)(s); (void)(r); (void)(g); (void)(b); } while (0)
 #define early_con_hex(v)          do { (void)(v); } while (0)
+#define early_con_hex8(v)         do { (void)(v); } while (0)
 #endif
 
 #ifdef CONFIG_LOG_RAMOOPS
@@ -125,6 +127,8 @@ int  ramfb_setup(void *framebuffer, int width, int height);
 int  gcc_enable_blsp1_qup_i2c(int qup_index);
 
 /* ---------------- Выводы общего назначения (Qualcomm TLMM) ---------------- */
+void msm_reboot_bootloader(void);
+
 int  keys_gpio_init(void);
 int  keys_gpio_poll(int *down);
 
@@ -151,6 +155,7 @@ int  i2c_qup_read_regs(uint64_t base, uint8_t addr, uint8_t reg, uint8_t *out, i
  * неотличимых: устройство промолчало (признак неподтверждения — значит
  * оно обесточено или его нет) либо ошиблись мы сами. */
 uint32_t i2c_qup_last_status(void);
+void i2c_qup_dump(uint64_t base, const char *where);
 
 /* ---------------- Тачскрин FocalTech FT5x06 / FT5435 ----------------
  * Собирается только для плат, у которых он есть (см. Makefile, BOARD).

@@ -118,6 +118,16 @@ void early_con_color(const char *s, uint8_t r, uint8_t g, uint8_t b) {
 
 void early_con_puts(const char *s) { early_con_color(s, 220, 220, 220); }
 
+/* Один байт двумя знаками — для дампов, где полная ширина только мешает. */
+void early_con_hex8(uint8_t v) {
+    static const char d[] = "0123456789ABCDEF";
+    char buf[3];
+    buf[0] = d[(v >> 4) & 0xF];
+    buf[1] = d[v & 0xF];
+    buf[2] = '\0';
+    early_con_puts(buf);
+}
+
 void early_con_hex(uint64_t v) {
     static const char d[] = "0123456789ABCDEF";
     char buf[19];
