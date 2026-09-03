@@ -188,7 +188,8 @@ LIBGCC := $(shell $(CC) $(ARCH_CFLAGS) -print-libgcc-file-name 2>/dev/null)
 CFLAGS := -std=gnu11 -ffreestanding -fno-stack-protector -fno-pie -nostdlib \
           -fno-builtin -Wall -Wextra -O2 $(ARCH_CFLAGS) \
           -DPROSHIVKA_SCREEN_W=$(SCREEN_W) -DPROSHIVKA_SCREEN_H=$(SCREEN_H) \
-          -Ihal -Ifs -Ishell -Iapps -Igui -Igui/touch -Iarch/$(ARCH)
+          -Ihal -Ifs -Ishell -Iapps -Igui -Igui/touch -Iarch/$(ARCH) \
+          $(EXTRA_CFLAGS)
 
 # ============================================================================
 #  Списки исходников

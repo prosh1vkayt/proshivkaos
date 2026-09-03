@@ -147,6 +147,11 @@ int  i2c_qup_xfer(uint64_t base, uint8_t addr,
 int  i2c_qup_write_reg(uint64_t base, uint8_t addr, uint8_t reg, uint8_t value);
 int  i2c_qup_read_regs(uint64_t base, uint8_t addr, uint8_t reg, uint8_t *out, int len);
 
+/* Состояние шины после последней передачи. Разделяет два случая, снаружи
+ * неотличимых: устройство промолчало (признак неподтверждения — значит
+ * оно обесточено или его нет) либо ошиблись мы сами. */
+uint32_t i2c_qup_last_status(void);
+
 /* ---------------- Тачскрин FocalTech FT5x06 / FT5435 ----------------
  * Собирается только для плат, у которых он есть (см. Makefile, BOARD).
  * На прочих сборках вместо этих функций подставляются слабые заглушки в

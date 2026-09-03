@@ -1,0 +1,161 @@
+#!/bin/sh
+# tools/posdev — отладка proshivkaOS на подключённом телефоне.
+#
+# ЗАЧЕМ. До сих пор единственным способом узнать, что происходит при
+# загрузке, была фотография экрана: система печатает на нём ход загрузки,
+# потому что отладочный порт выведен на разъём наушников и без паяного
+# кабеля молчит. Фотография работает, но круг получается длинный и живой
+# человек в нём обязателен.
+#
+# Эта утилита закрывает круг. Система пишет тот же вывод в область ОЗУ,
+# которую телефон исключил из общего пула ради посмертного журнала. Она
+# переживает перезагрузку, и её содержимое можно вытащить на компьютер.
+#
+# ПОЧЕМУ ЧЕРЕЗ RECOVERY, А НЕ ЧЕРЕЗ ROOT. Чтобы прочитать журнал в
+# Android, нужны права администратора, а их установка меняет систему и
+# ломает проверку целостности. Recovery даёт корневую оболочку по adb и
+# при этом ничего не устанавливает: он загружается в память командой
+# fastboot boot и после перезагрузки не оставляет следов.
+#
+# ИСПОЛЬЗОВАНИЕ
+#   posdev doctor          проверить окружение
+#   posdev build           собрать образ
+#   posdev run             загрузить образ на телефон
+#   posdev log             вытащить журнал прошлой загрузки
+#   posdev cycle           собрать, загрузить, дождаться, вытащить журнал
+#
+# ПЕРЕМЕННЫЕ
+#   POSDEV_DONOR    boot.img прошивки, в который подменяется ядро
+#   POSDEV_RECOVERY образ recovery для чтения журнала
+#   POSDEV_WAIT     сколько секунд давать системе поработать (по умолчанию 25)
+
+set -u
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+WAIT=${POSDEV_WAIT:-25}
+OUT="$ROOT/build/arm64-mido/posdev.log"
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'posdev: %s\n' "$*" >&2; exit 1; }
+
+# Ищем donor и recovery там, где они обычно лежат, но позволяем задать явно.
+find_donor() {
+    [ -n "${POSDEV_DONOR:-}" ] && { echo "$POSDEV_DONOR"; return; }
+    for f in "$HOME/mido/boot_pixelexperience.img" "$HOME/mido/flash/images/boot.img"; do
+        [ -f "$f" ] && { echo "$f"; return; }
+    done
+}
+
+find_recovery() {
+    [ -n "${POSDEV_RECOVERY:-}" ] && { echo "$POSDEV_RECOVERY"; return; }
+    # Берём самый свежий образ recovery для этого аппарата.
+    ls -t "$HOME"/Downloads/*mido*.img 2>/dev/null | grep -i -m1 -E 'twrp|recovery'
+}
+
+wait_fastboot() {
+    say "posdev: жду телефон в режиме загрузчика..."
+    n=0
+    while [ "$n" -lt 60 ]; do
+        [ -n "$(fastboot devices 2>/dev/null)" ] && return 0
+        n=$((n + 1))
+        # Ждём секунду, не полагаясь на sleep с дробями.
+        sleep 1
+    done
+    return 1
+}
+
+wait_adb() {
+    say "posdev: жду adb..."
+    adb wait-for-device >/dev/null 2>&1 &
+    pid=$!
+    n=0
+    while [ "$n" -lt 90 ]; do
+        [ -n "$(adb devices 2>/dev/null | sed -n '2p')" ] && { kill $pid 2>/dev/null; return 0; }
+        n=$((n + 1)); sleep 1
+    done
+    kill $pid 2>/dev/null
+    return 1
+}
+
+cmd_doctor() {
+    ok=0
+    for t in fastboot adb make magiskboot; do
+        if command -v "$t" >/dev/null 2>&1; then say "  $t: есть"
+        else say "  $t: НЕТ"; ok=1; fi
+    done
+    d=$(find_donor);    [ -n "$d" ] && say "  донор: $d"       || { say "  донор: НЕ НАЙДЕН"; ok=1; }
+    r=$(find_recovery); [ -n "$r" ] && say "  recovery: $r"    || say "  recovery: не найден (нужен только для 'log')"
+    say "  устройство adb: $(adb devices 2>/dev/null | sed -n '2p' | cut -f1)"
+    say "  устройство fastboot: $(fastboot devices 2>/dev/null | cut -f1)"
+    return $ok
+}
+
+cmd_build() {
+    d=$(find_donor)
+    [ -n "$d" ] || die "не найден boot.img прошивки; задайте POSDEV_DONOR"
+    say "posdev: собираю с донором $d"
+    ( cd "$ROOT" && make ARCH=arm64 BOARD=mido mido-swap DONOR="$d" ${POSDEV_EXTRA:+EXTRA_CFLAGS="$POSDEV_EXTRA"} ) \
+        || die "сборка не удалась"
+    say "posdev: готово: $ROOT/build/arm64-mido/proshivkaos_boot_swap.img"
+}
+
+cmd_run() {
+    img="$ROOT/build/arm64-mido/proshivkaos_boot_swap.img"
+    [ -f "$img" ] || die "образа нет, сначала: posdev build"
+
+    # Если телефон в Android — переводим его в загрузчик сами.
+    [ -n "$(adb devices 2>/dev/null | sed -n '2p')" ] && adb reboot bootloader >/dev/null 2>&1
+    wait_fastboot || die "телефон не появился в режиме загрузчика"
+
+    say "posdev: запускаю образ (в память, без записи)"
+    fastboot boot "$img" || die "загрузчик отказался принять образ"
+}
+
+cmd_log() {
+    r=$(find_recovery)
+    [ -n "$r" ] || die "не найден образ recovery; задайте POSDEV_RECOVERY"
+
+    wait_fastboot || die "телефон не в режиме загрузчика — переведите его туда"
+    say "posdev: поднимаю recovery для чтения журнала"
+    fastboot boot "$r" || die "recovery не загрузился"
+    wait_adb || die "adb не дождался recovery"
+
+    mkdir -p "$(dirname "$OUT")"
+    # Сначала штатный путь: ядро само отдаёт журнал прошлой загрузки.
+    adb shell 'cat /sys/fs/pstore/console-ramoops 2>/dev/null' > "$OUT" 2>/dev/null
+
+    if [ ! -s "$OUT" ]; then
+        # Запасной путь: читаем область напрямую. В recovery это можно —
+        # там оболочка работает с правами администратора.
+        say "posdev: pstore пуст, читаю область напрямую"
+        adb shell 'dd if=/dev/mem bs=4096 skip=655223 count=64 2>/dev/null' \
+            | LC_ALL=C tr -cd '\11\12\15\40-\176' > "$OUT" 2>/dev/null
+    fi
+
+    if [ -s "$OUT" ]; then
+        say "posdev: журнал сохранён в $OUT"
+        say "-----------------------------------------------"
+        cat "$OUT"
+        say "-----------------------------------------------"
+    else
+        die "журнал пуст: область не сохранилась (холодная перезагрузка) либо адрес другой"
+    fi
+}
+
+cmd_cycle() {
+    cmd_build
+    cmd_run
+    say "posdev: даю системе $WAIT секунд"
+    n=0; while [ "$n" -lt "$WAIT" ]; do n=$((n + 1)); sleep 1; done
+    say "posdev: если телефон завис — верните его в загрузчик долгим удержанием питания"
+    cmd_log
+}
+
+case "${1:-}" in
+    doctor) cmd_doctor ;;
+    build)  cmd_build ;;
+    run)    cmd_run ;;
+    log)    cmd_log ;;
+    cycle)  cmd_cycle ;;
+    *)      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac

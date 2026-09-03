@@ -134,7 +134,9 @@ int ft5x06_init(void) {
 
     uint8_t chip_id = 0;
     if (!i2c_qup_read_regs(g_i2c_base, BOARD_TS_I2C_ADDR, FT_REG_CHIP_ID, &chip_id, 1)) {
-        early_con_color("TS: kontroller ne otvechaet\n", 255, 180, 0);
+        early_con_color("TS: kontroller ne otvechaet, sostoyanie shiny ", 255, 180, 0);
+        early_con_hex((uint64_t)i2c_qup_last_status());
+        early_con_puts("\n");
         uart_write("ts: kontroller ne otvechaet po adresu 0x38\n");
         return 0;
     }
