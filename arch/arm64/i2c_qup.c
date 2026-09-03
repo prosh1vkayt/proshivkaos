@@ -53,6 +53,9 @@
 #define QUP_IN_FIFO_BASE        0x218
 #define QUP_I2C_CLK_CTL         0x400
 #define QUP_I2C_STATUS          0x404
+#define QUP_I2C_MASTER_GEN      0x408        /* включение меток второго
+                                                поколения                 */
+#define QUP_V2_TAGS_EN          1u
 /* Делитель скорости шины: считается при подъёме блока, а записывается уже
  * после перевода его в работу — так делает драйвер изготовителя. */
 static uint32_t g_clk_ctl = 0;
@@ -200,6 +203,23 @@ int i2c_qup_init(uint64_t base, uint32_t core_hz, uint32_t bus_hz) {
     mmio_write32(base + QUP_ERROR_FLAGS_EN, 0x7);
 
     mmio_write32(base + QUP_CONFIG, QUP_CONFIG_MINI_CORE_I2C | QUP_CONFIG_N_8BIT);
+
+    /*
+     * ВКЛЮЧЕНИЕ МЕТОК. Без этой строки всё остальное бессмысленно.
+     *
+     * Блок второго поколения умеет два языка. В старом транзакция
+     * задаётся регистрами, в новом — потоком меток вперемешку с данными
+     * (0x81 старт, 0x82 передать, 0x87 принять и остановиться). Мы всё
+     * это время говорили метками, не сказав блоку, что перешли на них.
+     *
+     * Он и не шёл в работу: настройка получалась противоречивой —
+     * счётчики заданы под один язык, поток под другой. Ошибок при этом
+     * не возникало, потому что и передачи не было.
+     *
+     * Строка взята из драйвера ядра, где она стоит сразу за заданием
+     * настройки: writel(QUP_V2_TAGS_EN, base + QUP_I2C_MASTER_GEN).
+     */
+    mmio_write32(base + QUP_I2C_MASTER_GEN, QUP_V2_TAGS_EN);
 
     /* Управление тактом шины пока обнуляем; настоящее значение блок
        получит уже в работе — так делает загрузчик. */
@@ -371,69 +391,53 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
     if (!set_state(base, QUP_RESET_STATE)) return 0;
 
     /*
-     * РЕЖИМ ОЧЕРЕДЕЙ, А НЕ БЛОЧНЫЙ — и счётчики у них РАЗНЫЕ.
+     * ПОРЯДОК ПОВТОРЯЕТ ДРАЙВЕР ЯДРА, и каждый шаг здесь на своём месте.
      *
-     * Здесь была ошибка, из-за которой блок вообще не начинал передачу.
-     * У него два способа обмена: короткие посылки через очереди и длинные
-     * блоками. Для каждого свои счётчики, и перепутать их нельзя:
+     * Сначала режим: обе стороны работают очередями, поэтому блочные
+     * счётчики обнуляются, а в режиме включается переупаковка байтов.
+     * Потом счётчики очередей и настройка. И только затем пуск.
      *
-     *     очереди : QUP_MX_WRITE_CNT (0x150), QUP_MX_READ_CNT  (0x208)
-     *     блоками : QUP_MX_OUTPUT_CNT (0x100), QUP_MX_INPUT_CNT (0x200)
-     *
-     * Мы заполняли счётчики блочного режима, оставаясь в режиме очередей.
-     * Блок покорно ждал блочную передачу, которой не было, — стоял в
-     * сбросе, очередь не пустела, а ошибок не возникало, потому что и
-     * передачи не было.
-     *
-     * Проверено по двум независимым источникам: драйвер загрузчика для
-     * этого же процессора прямо помечает счётчик записи как "valid/used
-     * only in block mode", а драйвер ядра в режиме очередей обнуляет
-     * блочные счётчики и заполняет очередные.
-     *
-     * Наши посылки короткие всегда (девять байт на чтение регистра), так
-     * что блочный режим не нужен вовсе.
+     * Самое неочевидное — что очередь заполняется В ПАУЗЕ, а не в работе.
+     * Блок, переведённый в работу, начинает передачу немедленно, и
+     * досыпать ему данные уже поздно: он успевает уйти вперёд. Поэтому
+     * после пуска его сразу ставят на паузу, наполняют очередь целиком и
+     * снова пускают — тогда вся посылка уходит одним куском.
      */
-    uint32_t cfg = QUP_CONFIG_MINI_CORE_I2C | QUP_CONFIG_N_8BIT;
-    if (rlen == 0) cfg |= QUP_CONFIG_NO_INPUT;   /* читать нечего */
-    mmio_write32(base + QUP_CONFIG, cfg);
+    mmio_write32(base + QUP_MX_OUTPUT_CNT, 0);
+    mmio_write32(base + QUP_MX_INPUT_CNT, 0);
     mmio_write32(base + QUP_IO_MODE, QUP_IO_MODE_PACK_EN | QUP_IO_MODE_UNPACK_EN);
 
-    mmio_write32(base + QUP_MX_OUTPUT_CNT, 0);
-    mmio_write32(base + QUP_MX_WRITE_CNT,  (uint32_t)n);
-    mmio_write32(base + QUP_MX_INPUT_CNT,  0);
-    mmio_write32(base + QUP_MX_READ_CNT,   (uint32_t)(rlen > 0 ? rlen : 0));
+    uint32_t cfg = QUP_CONFIG_MINI_CORE_I2C | QUP_CONFIG_N_8BIT;
+    mmio_write32(base + QUP_MX_WRITE_CNT, (uint32_t)n);
+    if (rlen > 0) mmio_write32(base + QUP_MX_READ_CNT, (uint32_t)rlen);
+    else          cfg |= QUP_CONFIG_NO_INPUT;
+    mmio_write32(base + QUP_CONFIG, cfg);
     dsb_sy();
 
     if (!set_state(base, QUP_RUN_STATE)) {
         i2c_qup_dump(base, "ne poshyol v rabotu");
         return 0;
     }
-    /* ТАКТ ШИНЫ ЗАДАЁТСЯ ЗДЕСЬ, а не при подъёме блока. Так делает
-       загрузчик: при подъёме он обнуляет этот регистр и записывает
-       настоящее значение только после перевода блока в работу. */
+
+    /* Такт шины задаётся здесь, уже в работе — так делает драйвер ядра. */
     mmio_write32(base + QUP_I2C_CLK_CTL, g_clk_ctl);
     dsb_sy();
 
-    i2c_qup_dump(base, "posle puska");
+    if (!set_state(base, QUP_PAUSE_STATE)) {
+        i2c_qup_dump(base, "ne vstal na pauzu");
+        return 0;
+    }
 
     if (!push_out(base, out, n)) {
-        /* Снимок состояния блока. Очередь не опустела — значит он принял
-           данные, но не передал их. Причина видна по этим регистрам:
-           STATE говорит, работает ли блок вообще, OPERATIONAL — чего он
-           ждёт, ERROR_FLAGS — не сорвалось ли что-то, HW_VERSION
-           подтверждает, что мы вообще разговариваем с тем блоком. */
-        early_con_puts("I2C: STATE ");
-        early_con_hex((uint64_t)mmio_read32(base + QUP_STATE));
-        early_con_puts(" OP ");
-        early_con_hex((uint64_t)mmio_read32(base + QUP_OPERATIONAL));
-        early_con_puts("\n     ERR ");
-        early_con_hex((uint64_t)mmio_read32(base + QUP_ERROR_FLAGS));
-        early_con_puts(" HW ");
-        early_con_hex((uint64_t)mmio_read32(base + QUP_HW_VERSION));
-        early_con_puts("\n");
-
+        i2c_qup_dump(base, "ochered ne osvobodilas");
         uart_write("i2c: ochered vyvoda ne osvobodilas\n");
         set_state(base, QUP_RESET_STATE);
+        return 0;
+    }
+
+    /* Очередь полна — отпускаем блок, и он отыгрывает всю посылку. */
+    if (!set_state(base, QUP_RUN_STATE)) {
+        i2c_qup_dump(base, "ne vozobnovil rabotu");
         return 0;
     }
 
