@@ -86,6 +86,7 @@ void early_con_puts(const char *s);
 void early_con_color(const char *s, uint8_t r, uint8_t g, uint8_t b);
 void early_con_hex(uint64_t v);
 void early_con_hex8(uint8_t v);
+void early_con_hex32(uint32_t v);
 #else
 #define early_fb_band(i, r, g, b) do { (void)(i); (void)(r); (void)(g); (void)(b); } while (0)
 #define early_fb_alert()          do { } while (0)
@@ -158,6 +159,22 @@ int  i2c_qup_read_regs(uint64_t base, uint8_t addr, uint8_t reg, uint8_t *out, i
  * оно обесточено или его нет) либо ошиблись мы сами. */
 uint32_t i2c_qup_last_status(void);
 void i2c_qup_dump(uint64_t base, const char *where);
+/* Расшифровать состояние шины словами — чтобы не разбирать разряды вручную. */
+void i2c_qup_explain(uint32_t st);
+/* Подробный след каждого шага сессии. Включён по умолчанию. */
+void i2c_qup_trace(int on);
+
+/* ---------------- Ведущий I2C вручную, на обычных выводах ----------------
+ * Запасной путь и одновременно измерительный прибор: он не зависит ни от
+ * чего, кроме самих выводов, и поэтому отделяет отказ контроллера от
+ * отсутствия устройства на шине. */
+int  i2c_bb_init(int sda_gpio, int scl_gpio, uint32_t bus_hz);
+int  i2c_bb_probe(uint8_t addr);
+int  i2c_bb_scan(void);
+int  i2c_bb_xfer(uint8_t addr, const uint8_t *wbuf, int wlen,
+                 uint8_t *rbuf, int rlen);
+int  i2c_bb_read_regs(uint8_t addr, uint8_t reg, uint8_t *out, int len);
+int  i2c_bb_write_reg(uint8_t addr, uint8_t reg, uint8_t value);
 
 /* ---------------- Тачскрин FocalTech FT5x06 / FT5435 ----------------
  * Собирается только для плат, у которых он есть (см. Makefile, BOARD).

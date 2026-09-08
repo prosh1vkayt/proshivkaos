@@ -276,7 +276,7 @@ else
     ARCH_INPUT_SOURCES += arch/arm64/gcc_msm8953.c
   endif
   ifneq ($(call cfg,I2C_QUP),)
-    ARCH_INPUT_SOURCES += arch/arm64/i2c_qup.c
+    ARCH_INPUT_SOURCES += arch/arm64/i2c_qup.c arch/arm64/i2c_bitbang.c
   endif
   ifneq ($(call cfg,TOUCH_FT5X06),)
     ARCH_INPUT_SOURCES += arch/arm64/touch_ft5x06.c

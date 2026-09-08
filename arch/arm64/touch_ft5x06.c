@@ -58,6 +58,45 @@
 static uint64_t g_i2c_base = 0;
 static int      g_ready    = 0;
 
+/* КАКИМ ПУТЁМ ХОДИМ НА ШИНУ.
+ *
+ * Путей два: аппаратный контроллер QUP и выдача шины вручную на обычных
+ * выводах. Второй медленнее в несколько раз, но не зависит ни от чего,
+ * кроме самих выводов. Выбор делается один раз при подъёме — тем, кто
+ * реально ответил. */
+enum { TS_BUS_NONE = 0, TS_BUS_QUP, TS_BUS_BITBANG };
+static int g_bus = TS_BUS_NONE;
+
+static int ts_read(uint8_t reg, uint8_t *out, int len) {
+    if (g_bus == TS_BUS_QUP)
+        return i2c_qup_read_regs(g_i2c_base, BOARD_TS_I2C_ADDR, reg, out, len);
+    if (g_bus == TS_BUS_BITBANG)
+        return i2c_bb_read_regs(BOARD_TS_I2C_ADDR, reg, out, len);
+    return 0;
+}
+
+static int ts_write(uint8_t reg, uint8_t value) {
+    if (g_bus == TS_BUS_QUP)
+        return i2c_qup_write_reg(g_i2c_base, BOARD_TS_I2C_ADDR, reg, value);
+    if (g_bus == TS_BUS_BITBANG)
+        return i2c_bb_write_reg(BOARD_TS_I2C_ADDR, reg, value);
+    return 0;
+}
+
+/* Вернуть выводы шины в состояние обычных входов. Нужно перед ручной
+   выдачей: пока вывод отдан контроллеру, мы им не распоряжаемся. */
+static void ts_pins_to_gpio(void) {
+    tlmm_gpio_input(BOARD_I2C_TS_SDA_GPIO, 0);
+    tlmm_gpio_input(BOARD_I2C_TS_SCL_GPIO, 0);
+}
+
+static void ts_pins_to_i2c(void) {
+    tlmm_gpio_func(BOARD_I2C_TS_SDA_GPIO, BOARD_I2C_TS_PIN_FUNC,
+                   BOARD_I2C_TS_PIN_DRIVE, 0);
+    tlmm_gpio_func(BOARD_I2C_TS_SCL_GPIO, BOARD_I2C_TS_PIN_FUNC,
+                   BOARD_I2C_TS_PIN_DRIVE, 0);
+}
+
 /* Последнее известное состояние — из него собираются события для hal_input. */
 static int g_x = 0, g_y = 0, g_pressed = 0;
 
@@ -100,23 +139,16 @@ int ft5x06_init(void) {
           уровнем, и в покое линию должно что-то удерживать в единице. */
     tlmm_gpio_input(BOARD_TS_IRQ_GPIO, 1);
 
-    /* 3. ВЫВОДЫ ШИНЫ. Без этого шага всё остальное бессмысленно: вывод
-          корпуса сам по себе ничей и остаётся обычным GPIO, пока ему не
-          назначена работа. Контроллер при этом честно поднимается и
-          честно передаёт — в никуда. */
-    /* СНАЧАЛА СМОТРИМ, ЖИВА ЛИ ШИНА.
+    /* 3. СНАЧАЛА СМОТРИМ, ЖИВА ЛИ ШИНА.
      *
      * Обе линии I2C подтянуты к питанию внешними резисторами, и питаются
      * они от того же источника, что и сам тачскрин (vcc_i2c). Если оно не
-     * подано, подтяжек нет: линии не в единице, контроллер считает шину
-     * занятой и не начинает передачу вовсе — очередь не пустеет, а
-     * ошибок при этом никаких, потому что и передачи не было.
+     * подано, подтяжек нет: линии не в единице, и дальше без управления
+     * источниками не продвинуться.
      *
-     * Читаем уровни как обычные входы без подтяжки. Обе единицы —
-     * шина свободна и питание есть, виноваты мы. Ноль — питания нет, и
-     * дальше без управления источниками не продвинуться. */
-    tlmm_gpio_input(BOARD_I2C_TS_SDA_GPIO, 0);
-    tlmm_gpio_input(BOARD_I2C_TS_SCL_GPIO, 0);
+     * Читаем уровни как обычные входы без подтяжки. Обе единицы — шина
+     * свободна и питание есть. */
+    ts_pins_to_gpio();
     hal_time_delay_ms(1);
 
     early_con_puts("TS: linii shiny SDA=");
@@ -125,49 +157,83 @@ int ft5x06_init(void) {
     early_con_puts(tlmm_gpio_get(BOARD_I2C_TS_SCL_GPIO) ? "1" : "0");
     early_con_puts(" (1 1 = shina svobodna i pitanie est)\n");
 
-    early_con_puts("TS: vyvody shiny do ");
-    early_con_hex((uint64_t)tlmm_gpio_cfg(BOARD_I2C_TS_SDA_GPIO));
+    /* 4. Сброс микросхемы. Делается до любого обмена и не требует шины —
+          только линию сброса. Загрузчик оставляет контроллер в
+          неопределённом состоянии, а иногда и в режиме пониженного
+          потребления, из которого он на I2C не отвечает вовсе. */
+    ft5x06_reset();
+    early_con_puts("TS: sbros vypolnen\n");
 
-    tlmm_gpio_func(BOARD_I2C_TS_SDA_GPIO, BOARD_I2C_TS_PIN_FUNC,
-                   BOARD_I2C_TS_PIN_DRIVE, 0);
-    tlmm_gpio_func(BOARD_I2C_TS_SCL_GPIO, BOARD_I2C_TS_PIN_FUNC,
-                   BOARD_I2C_TS_PIN_DRIVE, 0);
+    /* 5. РУЧНАЯ ВЫДАЧА ШИНЫ — ПЕРВОЙ.
+     *
+     * Порядок здесь не случайный. Мы несколько заходов подряд не могли
+     * различить два отказа: "контроллер настроен неверно" и "микросхемы
+     * на шине нет". Ручная выдача этот вопрос закрывает, потому что не
+     * использует ничего, кроме выводов. Ответ по адресу 0x38 означает,
+     * что микросхема запитана, адрес верен, и виноват контроллер; пустая
+     * шина означает обратное, и настраивать контроллер дальше незачем. */
+    int bb_id_ok = 0;
+    uint8_t bb_id = 0;
 
-    early_con_puts(" posle ");
-    early_con_hex((uint64_t)tlmm_gpio_cfg(BOARD_I2C_TS_SDA_GPIO));
-    early_con_puts("\n");
-
-    /* 4. Контроллер шины. */
-    int bus = i2c_qup_init(g_i2c_base, BOARD_I2C_TS_CORE_HZ, BOARD_I2C_TS_BUS_HZ);
-    early_con_puts(bus ? "TS: shina I2C podnyata\n" : "TS: shina I2C NE podnyalas\n");
-    if (!bus) {
-        uart_write("ts: I2C ne inicializirovan\n");
-        return 0;
+    if (i2c_bb_init(BOARD_I2C_TS_SDA_GPIO, BOARD_I2C_TS_SCL_GPIO, 100000)) {
+        i2c_bb_scan();
+        bb_id_ok = i2c_bb_read_regs(BOARD_TS_I2C_ADDR, FT_REG_CHIP_ID, &bb_id, 1);
+        early_con_puts(bb_id_ok ? "BB: 0x38 otvetil, id " : "BB: 0x38 molchit, id ");
+        early_con_hex8(bb_id);
+        early_con_puts("\n");
+    } else {
+        early_con_color("BB: shina ne svobodna — pohozhe net pitaniya\n", 255, 180, 0);
     }
 
-    /* 4. Сброс микросхемы. */
-    ft5x06_reset();
-
-    /* 5. Проверка, что на шине именно то, что мы ожидаем. Это же и первая
-          настоящая проверка, что вся цепочка такт-шина-выводы собрана
-          верно: если ответ пришёл и он осмысленный, значит работает всё. */
-    early_con_puts("TS: sbros vypolnen, sprashivaem 0x38\n");
+    /* 6. Аппаратный контроллер. Выводы отдаём ему. */
+    early_con_puts("TS: vyvody do ");
+    early_con_hex32(tlmm_gpio_cfg(BOARD_I2C_TS_SDA_GPIO));
+    ts_pins_to_i2c();
+    early_con_puts(" posle ");
+    early_con_hex32(tlmm_gpio_cfg(BOARD_I2C_TS_SDA_GPIO));
+    early_con_puts("\n");
 
     uint8_t chip_id = 0;
-    if (!i2c_qup_read_regs(g_i2c_base, BOARD_TS_I2C_ADDR, FT_REG_CHIP_ID, &chip_id, 1)) {
-        early_con_color("TS: kontroller ne otvechaet, sostoyanie shiny ", 255, 180, 0);
-        early_con_hex((uint64_t)i2c_qup_last_status());
-        early_con_puts("\n");
+    int qup_id_ok = 0;
+
+    if (i2c_qup_init(g_i2c_base, BOARD_I2C_TS_CORE_HZ, BOARD_I2C_TS_BUS_HZ)) {
+        early_con_puts("TS: sprashivaem 0x38 cherez QUP\n");
+        g_bus = TS_BUS_QUP;
+        qup_id_ok = ts_read(FT_REG_CHIP_ID, &chip_id, 1);
+        if (!qup_id_ok) {
+            early_con_color("TS: QUP ne poluchil otvet, sostoyanie ", 255, 180, 0);
+            early_con_hex32(i2c_qup_last_status());
+            early_con_puts("\n");
+            i2c_qup_explain(i2c_qup_last_status());
+        }
+    } else {
+        early_con_color("TS: QUP ne podnyalsya\n", 255, 180, 0);
+    }
+
+    /* 7. Выбор пути. Аппаратный предпочтительнее — он в разы быстрее, —
+          но работающий медленный путь лучше неработающего быстрого. */
+    if (qup_id_ok) {
+        g_bus = TS_BUS_QUP;
+        early_con_puts("TS: rabotaem cherez QUP\n");
+    } else if (bb_id_ok) {
+        ts_pins_to_gpio();
+        i2c_bb_init(BOARD_I2C_TS_SDA_GPIO, BOARD_I2C_TS_SCL_GPIO, 100000);
+        g_bus = TS_BUS_BITBANG;
+        chip_id = bb_id;
+        early_con_color("TS: rabotaem vruchnuyu (QUP ne otvetil)\n", 255, 220, 60);
+    } else {
+        g_bus = TS_BUS_NONE;
+        early_con_color("TS: kontroller ne otvechaet ni odnim putyom\n", 255, 80, 80);
         uart_write("ts: kontroller ne otvechaet po adresu 0x38\n");
         return 0;
     }
 
     early_con_puts("TS: otvetil, id ");
-    early_con_hex((uint64_t)chip_id);
+    early_con_hex8(chip_id);
     early_con_puts("\n");
 
     uint8_t fw = 0;
-    i2c_qup_read_regs(g_i2c_base, BOARD_TS_I2C_ADDR, FT_REG_FW_VERSION, &fw, 1);
+    ts_read(FT_REG_FW_VERSION, &fw, 1);
 
     uart_write("ts: FocalTech id=");
     uart_write_hex(chip_id);
@@ -177,14 +243,13 @@ int ft5x06_init(void) {
     if (chip_id != FT_CHIP_ID_FT5435) {
         /* Не отказываемся работать: на этой плате завод ставил контроллеры
            четырёх разных производителей, и у родственных микросхем
-           FocalTech протокол тот же самый при другом идентификаторе.
-           Просто сообщаем, что встретили не то, что ожидали. */
+           FocalTech протокол тот же самый при другом идентификаторе. */
         uart_write(" (ozhidalsya 0x54, protokol tot zhe — probuem)");
     }
     uart_putc('\n');
 
-    /* 6. Рабочий режим. */
-    i2c_qup_write_reg(g_i2c_base, BOARD_TS_I2C_ADDR, FT_REG_MODE, 0x00);
+    /* 8. Рабочий режим. */
+    ts_write(FT_REG_MODE, 0x00);
 
     g_ready = 1;
     return 1;
@@ -212,7 +277,7 @@ int ft5x06_poll(int *x, int *y, int *pressed) {
     uint8_t buf[FT_HEADER_BYTES + FT_BYTES_PER_TOUCH * BOARD_TS_MAX_TOUCHES];
     int want = FT_HEADER_BYTES + FT_BYTES_PER_TOUCH * BOARD_TS_MAX_TOUCHES;
 
-    if (!i2c_qup_read_regs(g_i2c_base, BOARD_TS_I2C_ADDR, FT_REG_MODE, buf, want))
+    if (!ts_read(FT_REG_MODE, buf, want))
         return 0;
 
     int points = buf[FT_REG_TD_STATUS] & 0x0F;

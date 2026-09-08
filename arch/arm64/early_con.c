@@ -128,6 +128,21 @@ void early_con_hex8(uint8_t v) {
     early_con_puts(buf);
 }
 
+/* Тридцать два разряда без ведущих нулей на пол-экрана.
+ *
+ * Регистры блоков здесь тридцатидвухбитные, а early_con_hex печатает
+ * шестьдесят четыре — двенадцать лишних нулей в каждой строке журнала.
+ * При построчной отладке шины это разница между читаемым снимком и
+ * простынёй. */
+void early_con_hex32(uint32_t v) {
+    static const char d[] = "0123456789ABCDEF";
+    char buf[9];
+    for (int i = 0; i < 8; i++)
+        buf[i] = d[(v >> (28 - i * 4)) & 0xF];
+    buf[8] = '\0';
+    early_con_puts(buf);
+}
+
 void early_con_hex(uint64_t v) {
     static const char d[] = "0123456789ABCDEF";
     char buf[19];
