@@ -37,6 +37,13 @@
 #define ARB_APID_MAP(n) (0x800 + 4 * (uint32_t)(n))
 #define ARB_MAX_APID    256
 
+/* Таблица владельцев каналов лежит в отдельном окне настройки. */
+#define ARB_APID_OWNER(n) (0x700 + 4 * (uint32_t)(n))
+#define ARB_OWNER_MASK    0x7
+
+/* Наше ядро исполнения. В дереве устройств: qcom,ee = <0>. */
+#define OUR_EE          0
+
 /* Состояние обмена */
 #define ARB_ST_DONE     (1u << 0)
 #define ARB_ST_FAILURE  (1u << 1)
@@ -75,6 +82,17 @@ int spmi_init(void) {
     return g_ready;
 }
 
+/* Какое устройство видно через канал. 0xFFFF — канал не занят.
+ *
+ * Нужно, чтобы искать узлы не наугад по предполагаемым адресам, а
+ * обойти то, что шина сама объявила доступным. */
+uint16_t spmi_channel_ppid(int apid) {
+    if (apid < 0 || apid >= ARB_MAX_APID) return 0xFFFF;
+    return g_ppid[apid];
+}
+
+int spmi_channel_count(void) { return ARB_MAX_APID; }
+
 /* Найти канал, через который видно нужное устройство. */
 static int find_apid(uint8_t sid, uint16_t addr) {
     uint16_t want = (uint16_t)(((uint16_t)sid << 8) | (addr >> 8));
@@ -90,6 +108,29 @@ static int wait_done(uint64_t status_reg) {
             return !(st & (ARB_ST_FAILURE | ARB_ST_DENIED | ARB_ST_DROPPED));
     }
     return 0;
+}
+
+/* Кто владеет каналом, то есть кому разрешено в него писать.
+ *
+ * ЗАЧЕМ ЭТО ПОНАДОБИЛОСЬ, И ДОРОГОЙ ЦЕНОЙ. На этой платформе шину делят
+ * несколько ядер исполнения: наше, модем и сопроцессор питания. Читать
+ * через окно наблюдения может любой, а вот ЗАПИСЬ в чужой узел не
+ * возвращает ошибку — она мгновенно и молча роняет процессор.
+ *
+ * Именно это и произошло: попытка включить источник питания тачскрина
+ * перезагружала телефон ещё до того, как он успевал появиться на
+ * проводе, и выглядело это как "образ перестал подниматься". Проверки
+ * вида узла, которая тут стояла, не хватило: узел был опознан верно, но
+ * распоряжаемся им не мы.
+ *
+ * Теперь владелец спрашивается заранее, и чужое остаётся нетронутым. */
+static int channel_owner(int apid) {
+    return (int)(mmio_read32(BOARD_SPMI_CNFG_BASE + ARB_APID_OWNER(apid)) & ARB_OWNER_MASK);
+}
+
+int spmi_owner_of(uint8_t sid, uint16_t addr) {
+    int apid = find_apid(sid, addr);
+    return (apid < 0) ? -1 : channel_owner(apid);
 }
 
 int spmi_read(uint8_t sid, uint16_t addr, uint8_t *out) {
@@ -114,6 +155,19 @@ int spmi_write(uint8_t sid, uint16_t addr, uint8_t value) {
     if (!g_ready) return 0;
     int apid = find_apid(sid, addr);
     if (apid < 0) return 0;
+
+    /* Чужое не трогаем. Отказ здесь дешевле любой попытки: запись в
+       чужой узел не возвращает ошибку, а роняет процессор. */
+    int owner = channel_owner(apid);
+    if (owner != OUR_EE) {
+        early_con_puts("SPMI: uzel ");
+        early_con_hex8(sid);
+        early_con_hex8((uint8_t)(addr >> 8));
+        early_con_puts(" prinadlezhit yadru ");
+        early_con_hex32((uint32_t)owner);
+        early_con_puts(", ne nashemu — ne pishem\n");
+        return 0;
+    }
 
     uint64_t ch = BOARD_SPMI_CHNLS_BASE + 0x8000ULL * (uint64_t)apid;
 

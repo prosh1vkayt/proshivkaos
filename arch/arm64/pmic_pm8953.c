@@ -47,8 +47,17 @@
 #define TYPE_LDO            0x04
 #define TYPE_ULT_LDO        0x21
 
-/* Микросхема питания — ведомый номер 0 на шине. */
-#define PMIC_SID            0
+/* НОМЕР ВЕДОМОГО. Источники питания живут на ведомом НОМЕР ОДИН, а не
+ * ноль, как я поначалу решил. Выяснилось это не рассуждением, а обходом:
+ * арбитр шины перечисляет доступные узлы, у каждого спрашивается вид, и
+ * двадцать четыре из них ответили "источник питания" — все с адресами
+ * вида 01xx.
+ *
+ * Раскладка адресов при этом оказалась той самой, предполагавшейся:
+ * источник номер n лежит по 0x4000 + (n-1)*0x100. Неверна была только
+ * половина догадки, и именно из-за неё все двадцать три обращения
+ * уходили в пустоту. */
+#define PMIC_SID            1
 
 uint16_t pmic_ldo_base(int n) { return (uint16_t)(0x4000 + (n - 1) * 0x100); }
 
@@ -79,18 +88,76 @@ void pmic_ldo_dump(int n) {
     early_con_puts((en & ENABLE_BIT) ? " (RABOTAET)\n" : " (VYKLYUCHEN)\n");
 }
 
-/* Перечислить все источники разом.
+/* ОБОЙТИ ВСЁ, ЧТО ШИНА ОБЪЯВИЛА ДОСТУПНЫМ.
  *
- * Нужно ровно один раз и ровно для одного: убедиться, что наша догадка о
- * раскладке адресов верна. Номер источника мы вычисляем по принятой
- * формуле, а не читаем откуда-то, и проверить её можно только по
- * ответам самих узлов: у работающих источников напряжения должны совпасть
- * с тем, что записано в дереве устройств (l6 — 1.8 В, l10 — 2.85 В,
- * l3 — 0.925 В, l7 — 1.8 В, l13 — 3.075 В). Если картина не сойдётся,
- * значит нумерация другая, и трогать источники нельзя. */
-void pmic_dump_all(void) {
-    early_con_puts("PMIC: perechen istochnikov (vid/podvid napr rezhim vkl)\n");
-    for (int n = 1; n <= 23; n++) pmic_ldo_dump(n);
+ * Предыдущий заход показал, что искать источники по предполагаемым
+ * адресам бесполезно: из двадцати трёх ни один не оказался источником
+ * питания. Гадать дальше незачем — арбитр шины сам перечисляет, какие
+ * узлы через него видны, и у каждого узла можно спросить, что он такое.
+ *
+ * Печатаются все узлы подряд (адрес и вид), а отдельной строкой — те,
+ * чей вид означает источник питания. Это и есть ответ на вопрос, где они
+ * лежат и доступны ли нам вообще. */
+void pmic_scan(void) {
+    int total = spmi_channel_count();
+    int shown = 0, regs = 0;
+
+    early_con_puts("PMIC: uzly na shine (adres:vid)\n ");
+
+    for (int apid = 0; apid < total; apid++) {
+        uint16_t ppid = spmi_channel_ppid(apid);
+        if (ppid == 0xFFFF) continue;
+
+        uint8_t sid  = (uint8_t)(ppid >> 8);
+        uint16_t addr = (uint16_t)((ppid & 0xFF) << 8);
+
+        uint8_t type = 0;
+        if (!spmi_read(sid, addr, &type)) continue;      /* разбудить канал */
+        if (!spmi_read(sid, (uint16_t)(addr + REG_TYPE), &type)) continue;
+
+        early_con_puts(" ");
+        early_con_hex8(sid);
+        early_con_hex8((uint8_t)(ppid & 0xFF));
+        early_con_puts(":");
+        early_con_hex8(type);
+
+        if (++shown % 8 == 0) early_con_puts("\n ");
+
+        if (type == TYPE_LDO || type == TYPE_ULT_LDO) regs++;
+    }
+    early_con_puts("\n");
+
+    /* А теперь подробно — только источники питания. */
+    early_con_puts("PMIC: iz nih istochnikov pitaniya ");
+    early_con_hex32((uint32_t)regs);
+    early_con_puts("\n");
+
+    for (int apid = 0; apid < total; apid++) {
+        uint16_t ppid = spmi_channel_ppid(apid);
+        if (ppid == 0xFFFF) continue;
+
+        uint8_t sid  = (uint8_t)(ppid >> 8);
+        uint16_t addr = (uint16_t)((ppid & 0xFF) << 8);
+
+        uint8_t type = 0, sub = 0, range = 0, vset = 0, en = 0;
+        if (!spmi_read(sid, (uint16_t)(addr + REG_TYPE), &type)) continue;
+        if (type != TYPE_LDO && type != TYPE_ULT_LDO) continue;
+
+        spmi_read(sid, (uint16_t)(addr + REG_SUBTYPE), &sub);
+        spmi_read(sid, (uint16_t)(addr + REG_VOLTAGE_RANGE), &range);
+        spmi_read(sid, (uint16_t)(addr + REG_VOLTAGE_SET), &vset);
+        spmi_read(sid, (uint16_t)(addr + REG_ENABLE), &en);
+
+        early_con_puts("PMIC:  ");
+        early_con_hex8(sid); early_con_hex8((uint8_t)(ppid & 0xFF));
+        early_con_puts(" podvid "); early_con_hex8(sub);
+        early_con_puts(" napr ");   early_con_hex8(range);
+        early_con_puts(":");        early_con_hex8(vset);
+        early_con_puts((en & ENABLE_BIT) ? " RABOTAET" : " vyklyuchen");
+        early_con_puts(" hozyain ");
+        early_con_hex32((uint32_t)spmi_owner_of(sid, addr));
+        early_con_puts("\n");
+    }
 }
 
 /* Включить источник, если он выключен. Возвращает 1, если после вызова он

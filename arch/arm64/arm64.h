@@ -186,10 +186,15 @@ int  i2c_bb_write_reg(uint8_t addr, uint8_t reg, uint8_t value);
 int  spmi_init(void);
 int  spmi_read(uint8_t sid, uint16_t addr, uint8_t *out);
 int  spmi_write(uint8_t sid, uint16_t addr, uint8_t value);
+uint16_t spmi_channel_ppid(int apid);
+int  spmi_channel_count(void);
+/* Кому разрешено писать в узел. Наше ядро исполнения — нулевое; всё
+ * прочее трогать нельзя, запись в чужое роняет процессор. */
+int  spmi_owner_of(uint8_t sid, uint16_t addr);
 
 uint16_t pmic_ldo_base(int n);
 void pmic_ldo_dump(int n);
-void pmic_dump_all(void);
+void pmic_scan(void);
 
 /* Весь сохранённый журнал этой загрузки — чтобы отдать его в провод
  * целиком, а не только то, что напечатано после подключения. */

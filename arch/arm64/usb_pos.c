@@ -246,8 +246,16 @@ void usb_pos_received(const uint8_t *data, int len) {
             break;
 
         case 'd':
-            if (ramoops_snapshot(&g_replay, &g_replay_len)) g_replay_pos = 0;
-            else usb_log_write("POS: zhurnal nedostupen\n");
+            if (ramoops_snapshot(&g_replay, &g_replay_len)) {
+                g_replay_pos = 0;
+                /* Кольцо выбрасываем: всё, что в нём есть, уже входит в
+                   повтор. Иначе хвост прошлой выдачи вклинивается в
+                   начало журнала, и порядок строк перестаёт что-либо
+                   значить — а читают журнал именно по порядку. */
+                g_tail = g_head;
+            } else {
+                usb_log_write("POS: zhurnal nedostupen\n");
+            }
             break;
 
 #ifdef BOARD_IMEM_RESTART_REASON

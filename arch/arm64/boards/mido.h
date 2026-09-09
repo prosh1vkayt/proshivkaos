@@ -294,6 +294,7 @@
 #define BOARD_SPMI_CORE_BASE      0x0200F000UL
 #define BOARD_SPMI_CHNLS_BASE     0x02400000UL
 #define BOARD_SPMI_OBSRVR_BASE    0x02C00000UL
+#define BOARD_SPMI_CNFG_BASE      0x0200A000UL
 
 /* Линия удержания питания. Отпустив её, процессор просит микросхему
  * питания перезапустить аппарат:

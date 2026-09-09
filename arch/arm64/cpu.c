@@ -166,7 +166,7 @@ void hal_arch_init(void *boot_info) {
     /* Шина к микросхеме питания. Нужна и приёмопередатчику USB, и
        тачскрину: оба питаются от источников, которые загрузчик гасит,
        уходя. Поднимается раньше их обоих. */
-    if (spmi_init()) pmic_dump_all();
+    if (spmi_init()) pmic_scan();
 #endif
 
 #ifdef CONFIG_USB_DWC3

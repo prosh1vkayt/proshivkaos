@@ -149,7 +149,9 @@ int ft5x06_init(void) {
     pmic_ldo_dump(6);
     pmic_ldo_enable(6);
     pmic_ldo_dump(10);
-    pmic_ldo_enable(10);
+    if (!pmic_ldo_enable(10))
+        early_con_color("TS: pitanie 2.85 V podat nechem: istochnikom "
+                        "rasporyazhaetsya soprocessor pitaniya\n", 255, 180, 0);
     hal_time_delay_ms(20);      /* дать источникам выйти на режим */
 
     /* 3. Линия прерывания — вход с подтяжкой вверх: сигнал активен низким
@@ -179,7 +181,20 @@ int ft5x06_init(void) {
           неопределённом состоянии, а иногда и в режиме пониженного
           потребления, из которого он на I2C не отвечает вовсе. */
     ft5x06_reset();
-    early_con_puts("TS: sbros vypolnen\n");
+
+    /* Читаем линию сброса обратно. Удерживаемый в сбросе контроллер
+       молчит на шине точно так же, как обесточенный, и снаружи эти два
+       случая неотличимы. Единица здесь означает, что сброс отпущен и
+       дело не в нём. */
+    tlmm_gpio_input(BOARD_TS_RESET_GPIO, 0);
+    hal_time_delay_ms(1);
+    int rst = tlmm_gpio_get(BOARD_TS_RESET_GPIO);
+    tlmm_gpio_output(BOARD_TS_RESET_GPIO, 1);
+
+    early_con_puts("TS: sbros vypolnen, liniya sbrosa ");
+    early_con_puts(rst ? "1 (otpushchena)" : "0 (UDERZHIVAETSYA)");
+    early_con_puts(" preryvanie ");
+    early_con_puts(tlmm_gpio_get(BOARD_TS_IRQ_GPIO) ? "1\n" : "0\n");
 
     /* 6. РУЧНАЯ ВЫДАЧА ШИНЫ — ПЕРВОЙ.
      *
