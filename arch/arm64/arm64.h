@@ -201,6 +201,22 @@ void pmic_scan(void);
 int ramoops_snapshot(const volatile unsigned char **data, uint32_t *len);
 int  pmic_ldo_enable(int n);
 
+/* ---------------- Сопроцессор питания ----------------
+ *
+ * Часть источников питания нам не принадлежит: прямая запись в
+ * микросхему питания для них закрыта и роняет процессор. Их включают,
+ * попросив сопроцессор питания через общую память. */
+int  smem_init(void);
+uint64_t smem_item(int id, uint32_t *size);
+void smem_item_debug(int id);
+
+int  smd_rpm_init(void);
+int  rpm_regulator_enable(uint32_t res_type, uint32_t res_id, uint32_t uv);
+
+/* Вид ресурса — четыре буквы младшим байтом вперёд. У источников
+ * питания это "ldoa" (см. дерево устройств: qcom,resource-name). */
+#define RPM_RES_LDOA  0x616F646Cu
+
 /* ---------------- USB в режиме устройства (Synopsys DWC3) ----------------
  * Собирается только для плат, где он есть. Всё, что печатается на экран,
  * попутно уходит в компьютер по проводу — ради этого он и поднимается. */

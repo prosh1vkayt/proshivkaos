@@ -301,4 +301,28 @@
  *     restart@4ab000 { compatible = "qcom,pshold"; } */
 #define BOARD_PSHOLD_ADDR         0x004AB000UL
 
+/* ---------------- Общая память процессоров и сопроцессор питания ----
+ *
+ *   qcom,smem@86300000 { reg = <0x86300000 0x100000  0xb011008 0x04 ...>;
+ *                        reg-names = "smem", "irq-reg-base", ...; }
+ *   qcom,smd-rpm { qcom,smd-edge = <0x0f>; qcom,smd-irq-bitmask = <0x01>; }
+ *   qcom,rpm-smd { rpm-channel-name = "rpm_requests"; }
+ *
+ * Через эту область идут просьбы к сопроцессору питания — единственный
+ * способ включить источники, которыми он распоряжается. Прямая запись в
+ * микросхему питания для них закрыта и роняет процессор. */
+#define BOARD_SMEM_BASE           0x86300000UL
+#define BOARD_SMEM_SIZE           0x00100000UL
+
+/* Дополнительная область общей памяти. Часть предметов лежит не в
+ * основной области, а здесь — в дереве она объявлена как "aux-mem1".
+ * Именно тут живут состояние и очереди канала к сопроцессору питания.
+ * Адрес низкий, то есть попадает в окно регистров устройств и уже
+ * отображён некэшируемым. */
+#define BOARD_SMEM_AUX_BASE       0x00060000UL
+#define BOARD_SMEM_AUX_SIZE       0x00008000UL
+#define BOARD_SMD_IPC_REG         0x0B011008UL
+#define BOARD_SMD_RPM_IPC_BIT     0x1u
+#define BOARD_SMD_RPM_EDGE        15
+
 #endif

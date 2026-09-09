@@ -151,6 +151,16 @@ void mmu_init(const void *dtb) {
                 desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NORMAL) |
                        DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF;
             }
+#ifdef BOARD_SMEM_BASE
+            else if (in_range(phys, (uint64_t)BOARD_SMEM_BASE,
+                              (uint64_t)BOARD_SMEM_SIZE)) {
+                /* Память, общая с другими процессорами. Кэшировать
+                   нельзя: написанное нами должен увидеть сопроцессор
+                   питания, а написанное им — мы. */
+                desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_DEVICE) |
+                       DESC_AP_RW_EL1 | DESC_AF;
+            }
+#endif
 #ifdef BOARD_HAS_STATIC_FB
             else if (in_range(phys, (uint64_t)BOARD_FB_ADDR,
                               (uint64_t)BOARD_FB_STRIDE * BOARD_FB_HEIGHT) ||

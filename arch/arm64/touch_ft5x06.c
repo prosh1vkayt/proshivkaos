@@ -149,9 +149,17 @@ int ft5x06_init(void) {
     pmic_ldo_dump(6);
     pmic_ldo_enable(6);
     pmic_ldo_dump(10);
-    if (!pmic_ldo_enable(10))
-        early_con_color("TS: pitanie 2.85 V podat nechem: istochnikom "
-                        "rasporyazhaetsya soprocessor pitaniya\n", 255, 180, 0);
+    if (!pmic_ldo_enable(10)) {
+        /* Прямой путь закрыт: источником распоряжается сопроцессор
+           питания. Значит, не приказываем, а просим. */
+#ifdef CONFIG_RPM_SMD
+        rpm_regulator_enable(RPM_RES_LDOA, 10, 2850000);
+        hal_time_delay_ms(50);
+        pmic_ldo_dump(10);      /* и смотрим, послушался ли */
+#else
+        early_con_color("TS: pitanie 2.85 V podat nechem\n", 255, 180, 0);
+#endif
+    }
     hal_time_delay_ms(20);      /* дать источникам выйти на режим */
 
     /* 3. Линия прерывания — вход с подтяжкой вверх: сигнал активен низким

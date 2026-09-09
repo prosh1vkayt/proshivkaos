@@ -284,6 +284,9 @@ else
   ifneq ($(call cfg,PMIC_SPMI),)
     ARCH_BASE_SOURCES += arch/arm64/spmi_msm.c arch/arm64/pmic_pm8953.c
   endif
+  ifneq ($(call cfg,RPM_SMD),)
+    ARCH_BASE_SOURCES += arch/arm64/smem_msm.c arch/arm64/smd_rpm.c
+  endif
   ifneq ($(call cfg,USB_DWC3),)
     ARCH_BASE_SOURCES += arch/arm64/usb_dwc3.c arch/arm64/usb_pos.c
   endif
