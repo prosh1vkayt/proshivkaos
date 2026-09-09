@@ -8,6 +8,14 @@
 #include "hal_time.h"
 #include "arm64.h"
 #include "platform.h"
+/* Заголовок платы. Без него весь здешний код под BOARD_* был мёртв, и
+ * молча: препроцессор выбрасывал его, не сказав ни слова.
+ *
+ * Так и не работали три вещи сразу — сторожевой таймер не глушился и не
+ * заводился, а обработчик сбоя не возвращался в загрузчик. Каждую из них
+ * я по очереди объяснял себе иначе: то аппаратной особенностью, то
+ * неверными адресами. Все три оказались одной пропущенной строкой. */
+#include "boards/board.h"
 
 const char *hal_arch_name(void) { return "ARM64"; }
 
@@ -166,6 +174,9 @@ void hal_arch_init(void *boot_info) {
 
     early_fb_band(8, 128, 255, 128);   /* салатовая: счётчик пошёл */
     early_con_puts("5 schetchik, arch gotov\n");
+#if defined(BOARD_WDOG_BASE) && !defined(CONFIG_WDOG_OFF)
+    msm_watchdog_report();
+#endif
 
 #ifdef CONFIG_PMIC_SPMI
     /* Шина к микросхеме питания. Нужна и приёмопередатчику USB, и

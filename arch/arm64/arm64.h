@@ -134,6 +134,7 @@ void msm_reboot_bootloader(void);
 void msm_reboot_system(void);
 void msm_reboot(uint32_t reason);
 void msm_watchdog_arm(void);
+void msm_watchdog_report(void);
 
 int  keys_gpio_init(void);
 int  keys_gpio_poll(int *down);

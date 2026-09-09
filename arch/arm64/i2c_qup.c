@@ -127,7 +127,14 @@ static uint32_t g_hw_version  = 0;
 static int      g_out_fifo_sz = 16;
 static int      g_in_fifo_sz  = 16;
 static uint32_t g_last_status = 0;
-static int      g_trace       = 1;   /* подробный след каждого шага */
+/* Подробный след каждого шага сессии.
+ *
+ * Пока шина не работала, он был единственным способом понять, на чём
+ * именно она спотыкается, и стоил своего места в журнале. Теперь она
+ * работает, а след даёт по семь строк на каждое обращение к тачскрину —
+ * то есть заслоняет собой всё остальное. Снимки при отказе остаются;
+ * включить след обратно можно вызовом i2c_qup_trace(1). */
+static int      g_trace       = 0;
 
 uint32_t i2c_qup_last_status(void) { return g_last_status; }
 void     i2c_qup_trace(int on)     { g_trace = on; }
