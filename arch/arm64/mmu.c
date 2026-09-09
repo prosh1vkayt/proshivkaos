@@ -93,14 +93,27 @@ void mmu_init(const void *dtb) {
      * экране, вместо безмолвной перезагрузки.
      */
     extern char _start[];
-    extern char __stack_top[];
+    extern char __image_end[];
+    extern char __dma_start[];
+    extern char __dma_end[];
 
     const uint64_t blk = 1ULL << L2_BLOCK_SHIFT;
 
     /* Окно нашего образа: код, данные, .bss и стек. Границы берём у
        компоновщика, а не на глаз. */
     const uint64_t img_lo = (uint64_t)(uintptr_t)_start & ~(blk - 1);
-    const uint64_t img_hi = ((uint64_t)(uintptr_t)__stack_top + blk - 1) & ~(blk - 1);
+    const uint64_t img_hi = ((uint64_t)(uintptr_t)__image_end + blk - 1) & ~(blk - 1);
+
+    /* Область обмена с устройствами, которые ходят в память сами. Лежит
+       внутри образа, но кэшироваться не должна — иначе контроллер USB
+       будет читать не то, что мы записали. */
+    /* Границы округляются наружу до блока: атрибуты памяти задаются
+       блоками по 2 МиБ, и половину блока сделать некэшируемой нельзя.
+       Компоновщик выравнивает эту область как надо, но если однажды
+       перестанет — пусть лишний кусок окажется некэшируемым (медленно,
+       но верно), а не половина области кэшируемой (быстро и неверно). */
+    const uint64_t dma_lo = (uint64_t)(uintptr_t)__dma_start & ~(blk - 1);
+    const uint64_t dma_hi = ((uint64_t)(uintptr_t)__dma_end + blk - 1) & ~(blk - 1);
 
     /* Окно дерева устройств: загрузчик кладёт его отдельно от образа, а
        ссылки на строки внутри него система хранит и после включения MMU. */
@@ -126,6 +139,11 @@ void mmu_init(const void *dtb) {
                    вчерашнее значение. */
                 desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_DEVICE) |
                        DESC_AP_RW_EL1 | DESC_AF;
+            } else if (phys >= dma_lo && phys < dma_hi) {
+                /* Обмен с устройствами: обычная память, но без кэша.
+                   Устройства памяти не кэшируют и о наших кэшах не знают. */
+                desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NC) |
+                       DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF;
             } else if ((phys >= img_lo && phys < img_hi) ||
                        (dtb_hi && phys >= dtb_lo && phys < dtb_hi)) {
                 /* Наша собственная память — единственное, что имеет смысл

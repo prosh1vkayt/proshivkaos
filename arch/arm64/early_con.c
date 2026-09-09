@@ -102,6 +102,12 @@ void early_con_color(const char *s, uint8_t r, uint8_t g, uint8_t b) {
      * драйверов — оставалось только на фотографии. */
     ramoops_write(s);
 
+    /* И в провод. Журнал на экране читается глазами, в сохраняемой
+     * области — после перезагрузки, а здесь он уходит в компьютер прямо
+     * сейчас, пока система работает. Пока USB не собран или не поднялся,
+     * вызов бесплатный: ниже стоит слабая заглушка. */
+    usb_log_write(s);
+
     while (*s) {
         if (*s == '\n') {
             g_cx = 0;
@@ -117,6 +123,10 @@ void early_con_color(const char *s, uint8_t r, uint8_t g, uint8_t b) {
 }
 
 void early_con_puts(const char *s) { early_con_color(s, 220, 220, 220); }
+
+/* Заглушка на случай сборки без USB. Настоящая живёт в usb_pos.c и
+ * перекрывает эту при компоновке. */
+__attribute__((weak)) void usb_log_write(const char *s) { (void)s; }
 
 /* Один байт двумя знаками — для дампов, где полная ширина только мешает. */
 void early_con_hex8(uint8_t v) {

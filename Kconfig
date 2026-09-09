@@ -100,6 +100,18 @@ endmenu
 
 menu "Отладка"
 
+config USB_DWC3
+	bool "USB в режиме устройства (Synopsys DWC3 в обвязке Qualcomm)"
+	depends on BOARD_MIDO
+	select CLK_GCC_MSM8953
+	help
+	  Поднимает контроллер USB как устройство: компьютер видит телефон
+	  и может читать журнал загрузки прямо во время работы, не дожидаясь
+	  перезагрузки и не поднимая recovery.
+
+	  Требует некэшируемой области памяти для обмена — она выделена в
+	  компоновщике (__dma_start) и отображается в mmu.c.
+
 config LOG_RAMOOPS
 	bool "Журнал, переживающий перезагрузку (ramoops)"
 	depends on BOARD_MIDO

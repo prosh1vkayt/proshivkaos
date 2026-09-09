@@ -28,26 +28,13 @@
  */
 #include "arm64.h"
 #include "boards/board.h"
+#include "hal_time.h"
 
 static int g_sda = -1;
 static int g_scl = -1;
 static uint32_t g_half_us = 5;      /* половина периода: 5 мкс ~ 100 кГц */
 
-/* ---- Время ---- */
-
-static inline uint64_t bb_cnt(void) {
-    uint64_t v;
-    __asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r"(v));
-    return v;
-}
-
-static void bb_delay_us(uint32_t us) {
-    uint64_t f;
-    __asm__ volatile ("mrs %0, cntfrq_el0" : "=r"(f));
-    if (f == 0) f = 19200000;
-    uint64_t deadline = bb_cnt() + (f * (uint64_t)us) / 1000000u + 1;
-    while (bb_cnt() < deadline) { }
-}
+#define bb_delay_us(us) hal_time_delay_us(us)
 
 /* ---- Линии ---- */
 

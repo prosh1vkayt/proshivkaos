@@ -176,6 +176,31 @@ int  i2c_bb_xfer(uint8_t addr, const uint8_t *wbuf, int wlen,
 int  i2c_bb_read_regs(uint8_t addr, uint8_t reg, uint8_t *out, int len);
 int  i2c_bb_write_reg(uint8_t addr, uint8_t reg, uint8_t value);
 
+/* ---------------- USB в режиме устройства (Synopsys DWC3) ----------------
+ * Собирается только для плат, где он есть. Всё, что печатается на экран,
+ * попутно уходит в компьютер по проводу — ради этого он и поднимается. */
+int  usb_dwc3_init(void);
+void usb_dwc3_poll(void);
+int  usb_dwc3_ready(void);
+void usb_dwc3_set_configured(int on);
+
+/* Слой устройства: описания, стандартные запросы, кольцо журнала. */
+int  usb_pos_setup(const uint8_t *req, const uint8_t **data, int *len,
+                   uint8_t *set_addr);
+void usb_pos_reset(void);
+void usb_pos_speed(int mbit);
+void usb_pos_ctrl_data(const uint8_t *data, int len);
+void usb_pos_received(const uint8_t *data, int len);
+int  usb_pos_pull(uint8_t *dst, int max);
+
+/* Положить строку в кольцо для отправки в компьютер. Слабая заглушка в
+ * early_con.c делает вызов бесплатным там, где USB не собран. */
+void usb_log_write(const char *s);
+
+/* Тактирование USB и сбросы его блоков — в gcc_msm8953.c. */
+int  gcc_enable_usb30(void);
+void gcc_usb_block_reset(int qusb2_phy);
+
 /* ---------------- Тачскрин FocalTech FT5x06 / FT5435 ----------------
  * Собирается только для плат, у которых он есть (см. Makefile, BOARD).
  * На прочих сборках вместо этих функций подставляются слабые заглушки в

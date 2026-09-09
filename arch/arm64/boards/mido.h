@@ -249,4 +249,24 @@
 #define BOARD_PSTORE_CONSOLE_ADDR  0x9FF77000
 #define BOARD_PSTORE_CONSOLE_SIZE  0x80000
 
+/* ---------------- USB ----------------
+ *
+ * Ядро контроллера — Synopsys DesignWare USB3, вокруг него обвязка
+ * Qualcomm. Адреса сняты с дерева устройств самого телефона:
+ *
+ *   ssusb@7000000  { reg = <0x7000000 0xfc000  0x7e000 0x400>; }
+ *   dwc3@7000000   { compatible = "snps,dwc3"; }
+ *   qusb@79000     { compatible = "qcom,qusb2phy"; }
+ *
+ * Обвязка (её в дереве называют QSCRATCH) лежит внутри той же области, в
+ * 0x70F8800 — это ровно то место, куда смотрит загрузчик, поднимая USB
+ * ради fastboot.
+ *
+ * Приёмопередатчик сверхскоростного режима (ssphy@78000) здесь не нужен:
+ * разъём у этого телефона обычный micro-USB, пар для него в нём нет. */
+#define BOARD_USB_CORE_BASE       0x07000000UL
+#define BOARD_USB_QSCRATCH_BASE   0x070F8800UL
+#define BOARD_USB_AHB2PHY_BASE    0x0007E000UL
+#define BOARD_QUSB2_PHY_BASE      0x00079000UL
+
 #endif

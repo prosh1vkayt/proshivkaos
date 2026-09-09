@@ -118,3 +118,124 @@ int gcc_enable_blsp1_qup_i2c(int qup_index) {
     }
     return 1;
 }
+
+/* ======================= Тактирование USB 3.0 ============================
+ *
+ * У блока USB тактов не один, а пять, и все они нужны одновременно:
+ *
+ *   master     основной такт контроллера, 133.33 МГц от общей ФАПЧ
+ *   sleep      идёт даже когда контроллер спит — им он просыпается
+ *   mock_utmi  подставной такт приёмопередатчика, 19.2 МГц от кварца;
+ *              нужен, пока настоящий от приёмопередатчика ещё не пошёл
+ *   phy_cfg    доступ к регистрам приёмопередатчика по шине
+ *   вентиль    отдельная задвижка питания всего блока (GDSC)
+ *
+ * Вентиль питания здесь важнее прочего: пока он закрыт, регистры блока
+ * читаются нулями или вешают шину, и никакая настройка контроллера
+ * смысла не имеет. Поэтому он открывается первым и с проверкой.
+ */
+
+/* Ветви и корневые генераторы */
+#define GCC_USB30_MASTER_CBCR       0x3F000
+#define GCC_USB30_SLEEP_CBCR        0x3F004
+#define GCC_USB30_MOCK_UTMI_CBCR    0x3F008
+#define GCC_USB30_MASTER_CMD_RCGR   0x3F00C
+#define GCC_USB30_MASTER_CFG_RCGR   0x3F010
+#define GCC_USB30_MOCK_CMD_RCGR     0x3F020
+#define GCC_USB30_MOCK_CFG_RCGR     0x3F024
+#define GCC_USB_PHY_CFG_AHB_CBCR    0x3F080
+#define GCC_USB30_GDSCR             0x3F078
+
+/* Сбросы блоков */
+#define GCC_USB_30_BCR              0x3F070
+#define GCC_QUSB2_PHY_BCR           0x4103C
+
+/* Вентиль питания (Globally Distributed Switch Controller) */
+#define GDSC_SW_COLLAPSE            (1u << 0)   /* 1 = питание снято  */
+#define GDSC_PWR_ON                 (1u << 31)  /* 1 = питание подано */
+
+/* Настройка корневого генератора: источник и делитель.
+ * Делитель хранится как (2 * N - 1) — так его задаёт изготовитель. */
+#define RCG_CFG(src, div2m1)        (((uint32_t)(src) << 8) | (uint32_t)(div2m1))
+#define RCG_SRC_XO                  0
+#define RCG_SRC_GPLL0               1
+
+static int rcg_set(uint32_t cmd_off, uint32_t cfg_off, uint32_t cfg) {
+    mmio_write32(gcc_base() + cfg_off, cfg);
+    dsb_sy();
+    uint32_t cmd = mmio_read32(gcc_base() + cmd_off);
+    mmio_write32(gcc_base() + cmd_off, cmd | CMD_RCGR_ROOT_EN | CMD_RCGR_UPDATE);
+    dsb_sy();
+
+    for (int i = 0; i < 500; i++) {
+        if (!(mmio_read32(gcc_base() + cmd_off) & CMD_RCGR_UPDATE)) return 1;
+        for (volatile int d = 0; d < 200; d++) { }
+    }
+    return 0;
+}
+
+static int branch_on(uint32_t cbcr) {
+    uint32_t v = mmio_read32(gcc_base() + cbcr);
+    mmio_write32(gcc_base() + cbcr, v | CBCR_CLK_ENABLE);
+    dsb_sy();
+    return wait_branch_on(cbcr);
+}
+
+/* Кратковременный сброс блока. Разряд 0 регистра сброса держит блок в
+   сбросе, пока мы его не снимем. */
+void gcc_usb_block_reset(int qusb2_phy) {
+    uint32_t off = qusb2_phy ? GCC_QUSB2_PHY_BCR : GCC_USB_30_BCR;
+    uint32_t v = mmio_read32(gcc_base() + off);
+    mmio_write32(gcc_base() + off, v | 1u);
+    dsb_sy();
+    for (volatile int d = 0; d < 2000; d++) { }
+    mmio_write32(gcc_base() + off, v & ~1u);
+    dsb_sy();
+    for (volatile int d = 0; d < 2000; d++) { }
+}
+
+int gcc_enable_usb30(void) {
+    /* 1. Вентиль питания. Снимаем требование "свернуть" и ждём, пока
+          питание действительно подадут. Загрузчик обычно оставляет его
+          открытым — он сам пользуется USB для fastboot, — но полагаться
+          на это нельзя: он же его и закрывает, уходя. */
+    uint32_t g = mmio_read32(gcc_base() + GCC_USB30_GDSCR);
+    mmio_write32(gcc_base() + GCC_USB30_GDSCR, g & ~GDSC_SW_COLLAPSE);
+    dsb_sy();
+
+    int powered = 0;
+    for (int i = 0; i < 500; i++) {
+        if (mmio_read32(gcc_base() + GCC_USB30_GDSCR) & GDSC_PWR_ON) { powered = 1; break; }
+        for (volatile int d = 0; d < 200; d++) { }
+    }
+
+    early_con_puts("USB: ventil pitaniya ");
+    early_con_hex32(mmio_read32(gcc_base() + GCC_USB30_GDSCR));
+    early_con_puts(powered ? " otkryt\n" : " NE OTKRYLSYA\n");
+    if (!powered) return 0;
+
+    /* 2. Корневые генераторы. Основной — от общей ФАПЧ с делением на
+          шесть (133.33 МГц), подставной — прямо от кварца. */
+    int m1 = rcg_set(GCC_USB30_MASTER_CMD_RCGR, GCC_USB30_MASTER_CFG_RCGR,
+                     RCG_CFG(RCG_SRC_GPLL0, 11));
+    int m2 = rcg_set(GCC_USB30_MOCK_CMD_RCGR, GCC_USB30_MOCK_CFG_RCGR,
+                     RCG_CFG(RCG_SRC_XO, 1));
+
+    /* 3. Ветви. */
+    int b1 = branch_on(GCC_USB30_MASTER_CBCR);
+    int b2 = branch_on(GCC_USB30_SLEEP_CBCR);
+    int b3 = branch_on(GCC_USB30_MOCK_UTMI_CBCR);
+    int b4 = branch_on(GCC_USB_PHY_CFG_AHB_CBCR);
+
+    early_con_puts("USB: takty gen ");
+    early_con_puts(m1 ? "1" : "0");
+    early_con_puts(m2 ? "1" : "0");
+    early_con_puts(" vetvi ");
+    early_con_puts(b1 ? "1" : "0");
+    early_con_puts(b2 ? "1" : "0");
+    early_con_puts(b3 ? "1" : "0");
+    early_con_puts(b4 ? "1" : "0");
+    early_con_puts(" (master sleep utmi phy)\n");
+
+    return (b1 && b2 && b3 && b4);
+}
