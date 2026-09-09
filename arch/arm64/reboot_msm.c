@@ -53,6 +53,55 @@
 #define BITE_TICKS      0x2000
 #define BARK_TICKS      0x1000
 
+/* ---- Сторожевой таймер ----
+ *
+ * ЗАЧЕМ ОН СНОВА ЗАВЁДЕН. Загрузчик оставляет его тикающим, и первым
+ * делом система его глушила: пока мы отлаживались по фотографиям
+ * экрана, любое зависание успевало стать перезагрузкой раньше, чем его
+ * успевали рассмотреть.
+ *
+ * Теперь всё наоборот. Отладка идёт по проводу и кругами по две минуты,
+ * а зависшая система — это аппарат, который сам уже не оживёт: кнопку
+ * питания приходится держать руками, и круг встаёт до появления
+ * человека. Дважды за один вечер этого хватило, чтобы передумать.
+ *
+ * Срок взят с запасом в двадцать секунд: подъём системы занимает три, а
+ * дальше её гладят из каждого ожидания и из каждого опроса ввода. Если
+ * гладить перестали — значит и правда зависли. */
+#define WDOG_TICKS_PER_SEC  32768u
+#define WDOG_BITE_SECONDS   20u
+#define WDOG_BARK_SECONDS   16u
+
+void msm_watchdog_arm(void) {
+    mmio_write32(BOARD_WDOG_BASE + WDOG_EN, 0);
+    dsb_sy();
+    mmio_write32(BOARD_WDOG_BASE + WDOG_BARK_TIME, WDOG_TICKS_PER_SEC * WDOG_BARK_SECONDS);
+    mmio_write32(BOARD_WDOG_BASE + WDOG_BITE_TIME, WDOG_TICKS_PER_SEC * WDOG_BITE_SECONDS);
+    mmio_write32(BOARD_WDOG_BASE + WDOG_RST, 1);
+    dsb_sy();
+    mmio_write32(BOARD_WDOG_BASE + WDOG_EN, 1);
+    dsb_sy();
+
+    /* Прочитать обратно.
+     *
+     * Сторожевой таймер уже один раз не спас зависший аппарат, и
+     * непонятно было даже, завёлся ли он вообще. Показания регистров
+     * отвечают на это сразу: если включение не удержалось или сроки
+     * записались не те, дальше на него рассчитывать нельзя. */
+    early_con_puts("WDOG: vkl ");
+    early_con_hex32(mmio_read32(BOARD_WDOG_BASE + WDOG_EN));
+    early_con_puts(" lay ");
+    early_con_hex32(mmio_read32(BOARD_WDOG_BASE + WDOG_BARK_TIME));
+    early_con_puts(" ukus ");
+    early_con_hex32(mmio_read32(BOARD_WDOG_BASE + WDOG_BITE_TIME));
+    early_con_puts("\n");
+}
+
+/* Погладить. Вызывается из каждого ожидания и каждого опроса ввода. */
+void hal_watchdog_pet(void) {
+    mmio_write32(BOARD_WDOG_BASE + WDOG_RST, 1);
+}
+
 /* Настроить микросхему питания на перезапуск, а не на выключение. */
 static int pon_configure(uint8_t reset_type) {
     /* Запрет перед сменой настройки обязателен: менять вид сброса на

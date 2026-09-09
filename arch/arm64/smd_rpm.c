@@ -142,11 +142,37 @@ static int find_channel(const char *name, int edge) {
 
 /* ---- Подъём канала ---- */
 
+#ifdef CONFIG_RPM_HANDSHAKE
+/* Отметка шага с паузой.
+ *
+ * Пауза миллисекундами — единственная, что прокручивает провод, поэтому
+ * именно она и делает отметки видимыми на компьютере вовремя. */
+static void step(const char *what) {
+    early_con_puts("SMD shag ");
+    early_con_puts(what);
+    early_con_puts("\n");
+    hal_time_delay_ms(200);
+}
+
+static void report_states(void) {
+    early_con_puts("SMD: nashe ");
+    early_con_hex32(fld_get(0, FLD_STATE));
+    early_con_puts(" ih ");
+    early_con_hex32(fld_get(1, FLD_STATE));
+    early_con_puts("\n");
+}
+
+/* Ждём ответа сопроцессора.
+ *
+ * Ожидание идёт миллисекундами, а не микросекундами, и это важно: только
+ * миллисекундная задержка прокручивает провод (см. hal_background_poll).
+ * Микросекундная молчит, и всё это время журнал не уходит на компьютер —
+ * то есть именно тогда, когда он нужнее всего. */
 static int wait_remote(uint32_t want_a, uint32_t want_b) {
     for (int i = 0; i < 2000; i++) {
         uint32_t st = fld_get(1, FLD_STATE);
         if (st == want_a || st == want_b) return 1;
-        hal_time_delay_us(500);
+        hal_time_delay_ms(1);
     }
     return 0;
 }
@@ -160,18 +186,21 @@ static void set_local_state(uint32_t state) {
     fld_set(0, FLD_fSTATE, 1);
     smd_signal();
 }
+#endif
 
 int smd_rpm_init(void) {
     g_ready = 0;
 
     if (!smem_init()) return 0;
 
+    early_con_puts("SMD: ishchu kanal\n");
     int cid = find_channel("rpm_requests", BOARD_SMD_RPM_EDGE);
     if (cid < 0) {
         early_con_puts("SMD: kanal rpm_requests ne nayden\n");
         return 0;
     }
 
+    early_con_puts("SMD: kanal nayden, beru sostoyanie i ocheredi\n");
     uint32_t info_size = 0, fifo_size = 0;
     g_info = smem_item(SMEM_INFO_BASE + cid, &info_size);
     uint64_t fifo = smem_item(SMEM_FIFO_BASE + cid, &fifo_size);
@@ -210,41 +239,73 @@ int smd_rpm_init(void) {
     early_con_hex32(fld_get(1, FLD_STATE));
     early_con_puts("\n");
 
-    /* Рукопожатие. Если канал уже открыт с обеих сторон — не трогаем:
-       переоткрытие сбросило бы очереди под ногами у того, кто их уже
-       использует. */
-    if (fld_get(0, FLD_STATE) != SMD_OPENED || fld_get(1, FLD_STATE) != SMD_OPENED) {
-        early_con_puts("SMD: sbrasyvayu svoyu storonu\n");
-        fld_set(0, FLD_STATE, SMD_CLOSED);
-        fld_set(0, FLD_fDSR, 0); fld_set(0, FLD_fCTS, 0);
-        fld_set(0, FLD_fCD, 0);  fld_set(0, FLD_fRI, 0);
-        fld_set(0, FLD_fHEAD, 0); fld_set(0, FLD_fTAIL, 0);
-        fld_set(0, FLD_fSTATE, 1); fld_set(0, FLD_fBLOCK, 1);
-        fld_set(0, FLD_HEAD, 0);
-        fld_set(1, FLD_TAIL, 0);
-        smd_signal();
+    /* СНАЧАЛА ТОЛЬКО СМОТРИМ.
+     *
+     * Рукопожатие дважды подвесило аппарат, и оба раза узнать почему
+     * было нечем. Поэтому оно теперь отдельно и по умолчанию выключено:
+     * сборка без CONFIG_RPM_HANDSHAKE доходит до этого места, печатает
+     * всё, что видит, и идёт дальше живой.
+     *
+     * Это тот же порядок, который уже дважды окупился за этот вечер:
+     * прочитать, посмотреть, и только потом писать. Оба раза, когда я
+     * его нарушал, приходилось звать человека с кнопкой питания. */
+#ifndef CONFIG_RPM_HANDSHAKE
+    early_con_puts("SMD: rukopozhatie vyklyucheno v etoy sborke\n");
+    return 0;
+#else
+    /* РУКОПОЖАТИЕ ПО ШАГАМ.
+     *
+     * Оно дважды подвешивало аппарат наглухо, и оба раза непонятно было
+     * даже, на чём именно. Поэтому теперь перед каждой записью пишется
+     * отметка, а после — пауза. Пауза здесь не вежливость: только она
+     * прокручивает провод, и значит каждая отметка успевает уйти на
+     * компьютер до того, как случится следующая запись.
+     *
+     * Первая же НЕдошедшая отметка называет виновника поимённо. */
+    step("1: svoyo sostoyanie -> zakryto");
+    fld_set(0, FLD_STATE, SMD_CLOSED);
 
-        early_con_puts("SMD: obyavlyayu otkrytie\n");
-        set_local_state(SMD_OPENING);
-        early_con_puts("SMD: zhdu otveta\n");
-        if (!wait_remote(SMD_OPENING, SMD_OPENED)) {
-            early_con_puts("SMD: soprocessor ne otkryl kanal (ego sostoyanie ");
-            early_con_hex32(fld_get(1, FLD_STATE));
-            early_con_puts(")\n");
-            return 0;
-        }
+    step("2: sbros priznakov");
+    fld_set(0, FLD_fDSR, 0); fld_set(0, FLD_fCTS, 0);
+    fld_set(0, FLD_fCD, 0);  fld_set(0, FLD_fRI, 0);
+    fld_set(0, FLD_fHEAD, 0); fld_set(0, FLD_fTAIL, 0);
+    fld_set(0, FLD_fSTATE, 1); fld_set(0, FLD_fBLOCK, 1);
 
-        early_con_puts("SMD: obyavlyayu otkryt\n");
-        set_local_state(SMD_OPENED);
-        if (!wait_remote(SMD_OPENED, SMD_OPENED)) {
-            early_con_puts("SMD: kanal ne doshyol do otkrytogo\n");
-            return 0;
-        }
+    step("3: obnulenie ukazateley ocheredey");
+    fld_set(0, FLD_HEAD, 0);
+    fld_set(1, FLD_TAIL, 0);
+
+    step("4: budim soprocessor");
+    smd_signal();
+
+    step("5: zhdu, poka on zakroet svoyu storonu");
+    wait_remote(SMD_CLOSED, SMD_CLOSED);
+    report_states();
+
+    step("6: obyavlyayu otkrytie");
+    set_local_state(SMD_OPENING);
+
+    step("7: zhdu vstrechnogo otkrytiya");
+    if (!wait_remote(SMD_OPENING, SMD_OPENED)) {
+        report_states();
+        early_con_puts("SMD: soprocessor ne otkryl kanal\n");
+        return 0;
+    }
+
+    step("8: obyavlyayu otkryt");
+    set_local_state(SMD_OPENED);
+
+    step("9: zhdu podtverzhdeniya");
+    if (!wait_remote(SMD_OPENED, SMD_OPENED)) {
+        report_states();
+        early_con_puts("SMD: kanal ne doshyol do otkrytogo\n");
+        return 0;
     }
 
     early_con_puts("SMD: kanal k soprocessoru pitaniya otkryt\n");
     g_ready = 1;
     return 1;
+#endif
 }
 
 /* ---- Передача ---- */
@@ -256,74 +317,99 @@ static uint32_t tx_avail(void) {
     return mask - ((head - tail) & mask);
 }
 
-static void fifo_write(const uint8_t *data, uint32_t count) {
+/* Положить слова в кольцевую очередь передачи.
+ *
+ * ТОЛЬКО СЛОВАМИ, И ЭТО НЕ ПРИДИРКА. У канала две разновидности —
+ * побайтная и пословная, — и наш пословный. Такая очередь лежит во
+ * встроенной памяти, которая байтовых обращений не принимает вовсе:
+ * первая же попытка записать в неё байт закончилась внешним отказом
+ * шины (SError) прямо посреди отправки просьбы.
+ *
+ * Длины у нас все кратны четырём — и заголовок посылки, и тело
+ * просьбы, — так что делить нечего. */
+static void fifo_write(const uint32_t *words, uint32_t n) {
     uint32_t head = fld_get(0, FLD_HEAD);
-    for (uint32_t i = 0; i < count; i++) {
-        mmio_write8(g_tx_fifo + ((head + i) & (g_fifo_size - 1)), data[i]);
+    uint32_t mask = g_fifo_size - 1;
+
+    for (uint32_t i = 0; i < n; i++) {
+        mmio_write32(g_tx_fifo + ((head + i * 4) & mask), words[i]);
     }
-    head = (head + count) & (g_fifo_size - 1);
+
+    head = (head + n * 4) & mask;
     fld_set(0, FLD_HEAD, head);
 }
 
-static int smd_send(const uint8_t *data, uint32_t len) {
+static int smd_send(const uint32_t *body, uint32_t n_words) {
+    uint32_t len = n_words * 4;
     uint32_t total = SMD_PACKET_HDR + len;
     if (total >= g_fifo_size) return 0;
 
-    for (int i = 0; i < 2000 && tx_avail() < total; i++) hal_time_delay_us(500);
+    for (int i = 0; i < 2000 && tx_avail() < total; i++) hal_time_delay_ms(1);
     if (tx_avail() < total) { early_con_puts("SMD: ochered ne osvobodilas\n"); return 0; }
 
-    uint8_t hdr[SMD_PACKET_HDR];
-    for (int i = 0; i < SMD_PACKET_HDR; i++) hdr[i] = 0;
-    hdr[0] = (uint8_t)(len & 0xFF);
-    hdr[1] = (uint8_t)((len >> 8) & 0xFF);
-    hdr[2] = (uint8_t)((len >> 16) & 0xFF);
-    hdr[3] = (uint8_t)((len >> 24) & 0xFF);
+    /* Заголовок посылки — пять слов, из которых значимо только первое. */
+    uint32_t hdr[SMD_PACKET_HDR / 4] = { len, 0, 0, 0, 0 };
 
+    /* Отправка тоже разбита отметками с паузами.
+     *
+     * Отказ шины здесь приходит АСИНХРОННО: команда, на которой его
+     * поймали, оказывается арифметической, а виновата запись, случившаяся
+     * раньше. По одному адресу такое не разобрать — зато разбирается
+     * паузами: отказ успевает всплыть внутри паузы, и последняя дошедшая
+     * отметка называет виноватого. */
+    step("A: pered zapisyu v ochered");
     fld_set(0, FLD_fTAIL, 0);
-    fifo_write(hdr, SMD_PACKET_HDR);
-    fifo_write(data, len);
+
+    step("B: pishu zagolovok posylki");
+    fifo_write(hdr, SMD_PACKET_HDR / 4);
+
+    step("C: pishu telo prosby");
+    fifo_write(body, n_words);
+
+    step("D: podnimayu priznak");
     fld_set(0, FLD_fHEAD, 1);
 
+    step("E: budim soprocessor");
     smd_signal();
-    return 1;
-}
 
-/* Сложить 32-битное значение в буфер младшим байтом вперёд. */
-static void put32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
-    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+    step("F: otpravleno");
+    return 1;
 }
 
 /* Попросить сопроцессор включить источник питания.
  *
  * res_type — четырёхбуквенный вид ресурса ("ldoa"), res_id — его номер,
- * uv — напряжение в микровольтах (0 — не задавать). */
+ * uv — напряжение в микровольтах (0 — не задавать).
+ *
+ * Просьба состоит из трёх частей: какая служба и сколько всего, затем
+ * заголовок с видом и номером ресурса, затем тело — пары "ключ,
+ * длина, значение". */
 int rpm_regulator_enable(uint32_t res_type, uint32_t res_id, uint32_t uv) {
     if (!g_ready) return 0;
 
-    uint8_t msg[8 + 20 + 24];
-    int n = 0;
+    uint32_t msg[13];
+    uint32_t n = 0;
 
-    int kvps = uv ? 2 : 1;
-    uint32_t body = 20 + (uint32_t)kvps * 12;
+    uint32_t kvps = uv ? 2u : 1u;
+    uint32_t body_bytes = kvps * 12u;
 
-    put32(msg + n, RPM_SERVICE_REQUEST); n += 4;   /* какая служба     */
-    put32(msg + n, body);                n += 4;   /* длина остального */
+    msg[n++] = RPM_SERVICE_REQUEST;      /* какая служба                */
+    msg[n++] = 20u + body_bytes;         /* длина всего остального      */
 
-    put32(msg + n, g_msg_id++);          n += 4;   /* номер просьбы    */
-    put32(msg + n, RPM_STATE_ACTIVE);    n += 4;   /* для рабочего хода */
-    put32(msg + n, res_type);            n += 4;   /* вид ресурса      */
-    put32(msg + n, res_id);              n += 4;   /* его номер        */
-    put32(msg + n, (uint32_t)kvps * 12); n += 4;   /* длина тела       */
+    msg[n++] = g_msg_id++;               /* номер просьбы               */
+    msg[n++] = RPM_STATE_ACTIVE;         /* для рабочего хода           */
+    msg[n++] = res_type;                 /* вид ресурса                 */
+    msg[n++] = res_id;                   /* его номер                   */
+    msg[n++] = body_bytes;               /* длина тела                  */
 
     if (uv) {
-        put32(msg + n, RPM_KEY_UV); n += 4;
-        put32(msg + n, 4);          n += 4;
-        put32(msg + n, uv);         n += 4;
+        msg[n++] = RPM_KEY_UV;
+        msg[n++] = 4;
+        msg[n++] = uv;
     }
-    put32(msg + n, RPM_KEY_SWEN); n += 4;
-    put32(msg + n, 4);            n += 4;
-    put32(msg + n, 1);            n += 4;
+    msg[n++] = RPM_KEY_SWEN;
+    msg[n++] = 4;
+    msg[n++] = 1;
 
     early_con_puts("RPM: prosim vklyuchit ");
     early_con_hex32(res_type);
@@ -331,5 +417,5 @@ int rpm_regulator_enable(uint32_t res_type, uint32_t res_id, uint32_t uv) {
     early_con_hex32(res_id);
     early_con_puts("\n");
 
-    return smd_send(msg, (uint32_t)n);
+    return smd_send(msg, n);
 }

@@ -133,6 +133,7 @@ int  gcc_enable_blsp1_qup_i2c(int qup_index);
 void msm_reboot_bootloader(void);
 void msm_reboot_system(void);
 void msm_reboot(uint32_t reason);
+void msm_watchdog_arm(void);
 
 int  keys_gpio_init(void);
 int  keys_gpio_poll(int *down);

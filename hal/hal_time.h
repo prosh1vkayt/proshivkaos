@@ -33,4 +33,9 @@ void hal_time_delay_us(uint32_t us);
  * ждёт ответа миллисекунды и не знает, что мы заняты. */
 void hal_background_poll(void);
 
+/* Кто именно крутится в фоне. Заглушки в timer.c, настоящие — в
+ * драйверах провода и сторожевого таймера. */
+void hal_usb_pump(void);
+void hal_watchdog_pet(void);
+
 #endif

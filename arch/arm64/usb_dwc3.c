@@ -731,7 +731,7 @@ void usb_dwc3_set_configured(int on) {
 /* Фоновая прокрутка: вызывается из каждого ожидания в системе (см.
  * hal_time.h). Хост задаёт вопросы и ждёт ответа миллисекунды — стоящая
  * в задержке система для него неотличима от отключённой. */
-void hal_background_poll(void) { usb_dwc3_poll(); }
+void hal_usb_pump(void) { usb_dwc3_poll(); }
 
 void usb_dwc3_poll(void) {
     static int busy = 0;

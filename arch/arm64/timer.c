@@ -104,7 +104,16 @@ void hal_time_delay_us(uint32_t us) {
  *
  * Настоящая работа — в usb_dwc3.c; здесь пустая заглушка, чтобы сборки
  * без USB (и эмулятор) компоновались как раньше. */
-__attribute__((weak)) void hal_background_poll(void) { }
+/* Две слабые заглушки, которые перекрывают те, кому есть что делать:
+ * драйвер провода крутит очередь событий, сторожевой таймер гладят. На
+ * платах, где их нет, обе раскрываются в пустоту. */
+__attribute__((weak)) void hal_usb_pump(void) { }
+__attribute__((weak)) void hal_watchdog_pet(void) { }
+
+void hal_background_poll(void) {
+    hal_watchdog_pet();
+    hal_usb_pump();
+}
 
 void hal_time_delay_ms(uint32_t ms) {
     uint64_t deadline = hal_time_ms() + ms;
