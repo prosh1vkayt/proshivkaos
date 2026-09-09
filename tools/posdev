@@ -21,9 +21,13 @@
 #   posdev doctor          проверить окружение
 #   posdev build           собрать образ
 #   posdev run             загрузить образ на телефон
-#   posdev usb             слушать журнал по проводу, пока телефон работает
+#   posdev usb             слушать журнал по проводу (Ctrl-C — выход)
+#   posdev dump            забрать журнал по проводу и выйти самому
+#   posdev reboot [куда]   перезагрузить телефон: bootloader (по умолчанию)
+#                          или system
 #   posdev log             вытащить журнал прошлой загрузки (через recovery)
-#   posdev cycle           собрать, загрузить и слушать по проводу
+#   posdev cycle           весь круг: собрать, загрузить, забрать журнал и
+#                          вернуть телефон в загрузчик — без рук
 #
 # ПЕРЕМЕННЫЕ
 #   POSDEV_DONOR    boot.img прошивки, в который подменяется ядро
@@ -110,6 +114,14 @@ cmd_run() {
 
     # Если телефон в Android — переводим его в загрузчик сами.
     [ -n "$(adb devices 2>/dev/null | sed -n '2p')" ] && adb reboot bootloader >/dev/null 2>&1
+
+    # Если он уже в proshivkaOS — просим её саму уйти в загрузчик. Это и
+    # замыкает круг: человек у стола больше не нужен ни на одном шаге.
+    if python3 -c 'import usb.core,sys; sys.exit(0 if usb.core.find(idVendor=0x1209,idProduct=0x0001) else 1)' 2>/dev/null; then
+        say "posdev: телефон в proshivkaOS — прошу её уйти в загрузчик"
+        python3 "$ROOT/tools/posdev-usb.py" cmd b 5 >/dev/null 2>&1
+    fi
+
     wait_fastboot || die "телефон не появился в режиме загрузчика"
 
     say "posdev: запускаю образ (в память, без записи)"
@@ -153,7 +165,24 @@ cmd_usb() {
     # перезагрузка не нужны: строки приходят, пока телефон работает.
     mkdir -p "$(dirname "$OUT")"
     : > "$OUT"
-    python3 "$ROOT/tools/posdev-usb.py" "${1:-60}" "$OUT"
+    python3 "$ROOT/tools/posdev-usb.py" listen "${1:-60}" "$OUT"
+}
+
+cmd_dump() {
+    # То же самое, но выходит само, когда провод замолчал. На этом и
+    # держится круг без человека у стола.
+    mkdir -p "$(dirname "$OUT")"
+    : > "$OUT"
+    python3 "$ROOT/tools/posdev-usb.py" dump "${1:-40}" "$OUT"
+}
+
+cmd_reboot() {
+    case "${1:-bootloader}" in
+        system|sys) ch=s; where="в систему" ;;
+        *)          ch=b; where="в загрузчик" ;;
+    esac
+    say "posdev: перезагружаю $where"
+    python3 "$ROOT/tools/posdev-usb.py" cmd "$ch" "${2:-20}"
 }
 
 cmd_cycle() {
@@ -177,8 +206,13 @@ cmd_cycle() {
     cmd_run
 
     if [ "${POSDEV_VIA:-usb}" = "usb" ]; then
-        say "posdev: слушаю провод"
-        cmd_usb "$WAIT" && return 0
+        # Круг без рук: забрать журнал и сразу вернуть телефон в
+        # загрузчик, чтобы следующий заход начинался без человека.
+        if cmd_dump "$WAIT"; then
+            say "posdev: журнал в $OUT"
+            cmd_reboot bootloader
+            return 0
+        fi
         say "posdev: по проводу не отозвался — иду длинным путём"
     fi
 
@@ -197,6 +231,8 @@ case "${1:-}" in
     build)  cmd_build ;;
     run)    cmd_run ;;
     usb)    shift; cmd_usb "${1:-60}" ;;
+    dump)   shift; cmd_dump "${1:-40}" ;;
+    reboot) shift; cmd_reboot "${1:-bootloader}" ;;
     log)    cmd_log ;;
     cycle)  cmd_cycle ;;
     *)      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ;;

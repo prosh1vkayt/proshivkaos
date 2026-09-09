@@ -295,4 +295,9 @@
 #define BOARD_SPMI_CHNLS_BASE     0x02400000UL
 #define BOARD_SPMI_OBSRVR_BASE    0x02C00000UL
 
+/* Линия удержания питания. Отпустив её, процессор просит микросхему
+ * питания перезапустить аппарат:
+ *     restart@4ab000 { compatible = "qcom,pshold"; } */
+#define BOARD_PSHOLD_ADDR         0x004AB000UL
+
 #endif

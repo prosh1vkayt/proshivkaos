@@ -25,6 +25,7 @@
  * блок из ста семидесяти восьми байт, где важен каждый счётчик длины.
  */
 #include "arm64.h"
+#include "boards/board.h"
 
 #define VENDOR_ID       0x1209
 #define PRODUCT_ID      0x0001
@@ -175,13 +176,32 @@ void usb_log_write(const char *s) {
     }
 }
 
+/* Повтор всего журнала с самого начала.
+ *
+ * Кольцо выше хранит только то, что не успело уйти. Но хост подключается
+ * через несколько секунд после старта, а самое ценное — первые строки:
+ * причина отказа почти всегда там. Поэтому по команде отдаём целиком
+ * сохранённый журнал этой загрузки, который ведётся с первой строки. */
+static const volatile unsigned char *g_replay = 0;
+static uint32_t g_replay_len = 0;
+static uint32_t g_replay_pos = 0;
+
 int usb_pos_pull(uint8_t *dst, int max) {
     int n = 0;
     g_in_pull = 1;
-    while (n < max && g_tail != g_head) {
-        dst[n++] = (uint8_t)g_ring[g_tail];
-        g_tail = (g_tail + 1) % LOG_RING;
+
+    /* Сначала повтор, если он заказан: иначе свежие строки перемешались
+       бы со старыми и порядок в журнале перестал бы что-то значить. */
+    while (n < max && g_replay_pos < g_replay_len)
+        dst[n++] = g_replay[g_replay_pos++];
+
+    if (g_replay_pos >= g_replay_len) {
+        while (n < max && g_tail != g_head) {
+            dst[n++] = (uint8_t)g_ring[g_tail];
+            g_tail = (g_tail + 1) % LOG_RING;
+        }
     }
+
     g_in_pull = 0;
     return n;
 }
@@ -201,14 +221,49 @@ void usb_pos_ctrl_data(const uint8_t *data, int len) {
     (void)data; (void)len;      /* управляющих записей у нас пока нет */
 }
 
-/* Команды от компьютера. Пока их две, и обе односимвольные — этого
-   достаточно, чтобы посмотреть, что канал работает в обе стороны. */
+/* Команды от компьютера. Односимвольные — разбирать здесь нечего, а
+ * поводов для ошибки меньше.
+ *
+ *   p  отзовись
+ *   v  скажи, кто ты и на какой скорости
+ *   d  отдай весь журнал этой загрузки с самого начала
+ *   b  перезагрузись в загрузчик
+ *   s  перезагрузись в систему
+ *
+ * Последние две и делают круг отладки замкнутым: посмотреть журнал,
+ * поправить, собрать, вернуть телефон в загрузчик и загрузить снова —
+ * теперь всё это делается с компьютера, без рук у стола. */
 void usb_pos_received(const uint8_t *data, int len) {
     for (int i = 0; i < len; i++) {
-        if (data[i] == 'p') usb_log_write("POS: ping\n");
-        if (data[i] == 'v') {
+        switch (data[i]) {
+        case 'p':
+            usb_log_write("POS: ping\n");
+            break;
+
+        case 'v':
             usb_log_write("POS: proshivkaOS NEXT, mido, skorost ");
             usb_log_write(g_speed >= 480 ? "vysokaya\n" : "polnaya\n");
+            break;
+
+        case 'd':
+            if (ramoops_snapshot(&g_replay, &g_replay_len)) g_replay_pos = 0;
+            else usb_log_write("POS: zhurnal nedostupen\n");
+            break;
+
+#ifdef BOARD_IMEM_RESTART_REASON
+        case 'b':
+            usb_log_write("POS: uhozhu v zagruzchik\n");
+            msm_reboot_bootloader();
+            break;
+
+        case 's':
+            usb_log_write("POS: perezagruzhayus v sistemu\n");
+            msm_reboot_system();
+            break;
+#endif
+
+        default:
+            break;
         }
     }
 }

@@ -201,6 +201,19 @@ void ramoops_putc(char c) {
     flush((const void *)g_base, PRAM_HDR_BYTES);
 }
 
+/* Весь журнал этой загрузки одним куском.
+ *
+ * Нужен провода ради: хост подключается через несколько секунд после
+ * старта, и всё, что система напечатала до этого, он бы не увидел.
+ * Кольцо в usb_pos.c хранит только последнее; здесь лежит всё с самой
+ * первой строки. */
+int ramoops_snapshot(const volatile unsigned char **data, uint32_t *len) {
+    if (!g_ready) return 0;
+    *data = g_data;
+    *len  = g_used;
+    return 1;
+}
+
 void ramoops_write(const char *s) {
     while (*s) ramoops_putc(*s++);
 }

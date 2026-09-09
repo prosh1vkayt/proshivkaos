@@ -131,6 +131,8 @@ int  gcc_enable_blsp1_qup_i2c(int qup_index);
 
 /* ---------------- Выводы общего назначения (Qualcomm TLMM) ---------------- */
 void msm_reboot_bootloader(void);
+void msm_reboot_system(void);
+void msm_reboot(uint32_t reason);
 
 int  keys_gpio_init(void);
 int  keys_gpio_poll(int *down);
@@ -188,6 +190,10 @@ int  spmi_write(uint8_t sid, uint16_t addr, uint8_t value);
 uint16_t pmic_ldo_base(int n);
 void pmic_ldo_dump(int n);
 void pmic_dump_all(void);
+
+/* Весь сохранённый журнал этой загрузки — чтобы отдать его в провод
+ * целиком, а не только то, что напечатано после подключения. */
+int ramoops_snapshot(const volatile unsigned char **data, uint32_t *len);
 int  pmic_ldo_enable(int n);
 
 /* ---------------- USB в режиме устройства (Synopsys DWC3) ----------------
