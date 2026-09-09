@@ -156,6 +156,31 @@ int i2c_bb_init(int sda_gpio, int scl_gpio, uint32_t bus_hz) {
     uint32_t half = (bus_hz > 0) ? (500000u / bus_hz) : 5u;
     g_half_us = (half < 2) ? 2u : half;
 
+    /* САМОПРОВЕРКА ВЫВОДОВ.
+     *
+     * Пустой обход шины можно объяснить двояко: на шине никого нет либо
+     * мы не умеем ею шевелить. Второе проверяется прямо: прижимаем линию
+     * к нулю и читаем её же обратно. Если прижатая линия читается
+     * единицей, наружу мы не выходим вовсе, и все дальнейшие выводы о
+     * шине ничего не стоят. */
+    line_low(g_sda);  bb_delay_us(5);
+    int sda_low_ok = (line_read(g_sda) == 0);
+    line_release(g_sda); bb_delay_us(5);
+    int sda_hi_ok = (line_read(g_sda) == 1);
+
+    line_low(g_scl);  bb_delay_us(5);
+    int scl_low_ok = (line_read(g_scl) == 0);
+    line_release(g_scl); bb_delay_us(5);
+    int scl_hi_ok = (line_read(g_scl) == 1);
+
+    early_con_puts("BB: upravlenie vyvodami SDA ");
+    early_con_puts(sda_low_ok ? "niz-OK " : "NIZ-NET ");
+    early_con_puts(sda_hi_ok ? "verh-OK" : "VERH-NET");
+    early_con_puts(" SCL ");
+    early_con_puts(scl_low_ok ? "niz-OK " : "NIZ-NET ");
+    early_con_puts(scl_hi_ok ? "verh-OK" : "VERH-NET");
+    early_con_puts("\n");
+
     line_release(g_sda);
     line_release(g_scl);
     bb_delay_us(10);
@@ -168,7 +193,7 @@ int i2c_bb_init(int sda_gpio, int scl_gpio, uint32_t bus_hz) {
     early_con_puts(" SCL=");
     early_con_puts(scl ? "1" : "0");
     early_con_puts(" polovina takta ");
-    early_con_hex((uint64_t)g_half_us);
+    early_con_hex32(g_half_us);
     early_con_puts(" mks\n");
 
     if (!sda || !scl) {

@@ -281,6 +281,9 @@ else
   ifneq ($(call cfg,TOUCH_FT5X06),)
     ARCH_INPUT_SOURCES += arch/arm64/touch_ft5x06.c
   endif
+  ifneq ($(call cfg,PMIC_SPMI),)
+    ARCH_BASE_SOURCES += arch/arm64/spmi_msm.c arch/arm64/pmic_pm8953.c
+  endif
   ifneq ($(call cfg,USB_DWC3),)
     ARCH_BASE_SOURCES += arch/arm64/usb_dwc3.c arch/arm64/usb_pos.c
   endif

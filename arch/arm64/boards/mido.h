@@ -269,4 +269,30 @@
 #define BOARD_USB_AHB2PHY_BASE    0x0007E000UL
 #define BOARD_QUSB2_PHY_BASE      0x00079000UL
 
+/* Ещё два адреса из того же узла дерева, и оба обязательны:
+ *
+ *   qusb@79000 { reg-names = "qusb_phy_base", "ref_clk_addr",
+ *                            "tcsr_clamp_dig_n_1p8"; }
+ *
+ * Опорный такт включается снаружи приёмопередатчика, а зажим цифровых
+ * выходов держит блок прижатым к нулю, пока не подано питание 1.8 В, и
+ * сам не отпускается. Без них блок выглядит мёртвым. */
+#define BOARD_QUSB2_REF_CLK_EN    0x01841030UL
+#define BOARD_QUSB2_CLAMP_DIG_N   0x0193F020UL
+
+/* ---------------- Шина к микросхеме питания (SPMI) ----------------
+ *
+ *   qcom,spmi@200f000 {
+ *       reg-names = "core", "chnls", "obsrvr", "intr", "cnfg";
+ *       reg = <0x200f000 0x1000  0x2400000 0x800000
+ *              0x2c00000 0x800000  0x3800000 0x200000  0x200a000 0x2100>;
+ *       qcom,ee = <0>;
+ *   }
+ *
+ * Нам хватает трёх окон: общее (в нём таблица каналов), окно записи и
+ * окно наблюдения, через которое идёт чтение. */
+#define BOARD_SPMI_CORE_BASE      0x0200F000UL
+#define BOARD_SPMI_CHNLS_BASE     0x02400000UL
+#define BOARD_SPMI_OBSRVR_BASE    0x02C00000UL
+
 #endif

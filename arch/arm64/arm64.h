@@ -176,6 +176,20 @@ int  i2c_bb_xfer(uint8_t addr, const uint8_t *wbuf, int wlen,
 int  i2c_bb_read_regs(uint8_t addr, uint8_t reg, uint8_t *out, int len);
 int  i2c_bb_write_reg(uint8_t addr, uint8_t reg, uint8_t value);
 
+/* ---------------- Микросхема питания ----------------
+ *
+ * Тачскрин и приёмопередатчик USB питаются от отдельных источников
+ * внутри неё, и загрузчик, уходя, гасит то, чем сам не пользуется.
+ * Разговор идёт по шине SPMI напрямую, минуя сопроцессор питания. */
+int  spmi_init(void);
+int  spmi_read(uint8_t sid, uint16_t addr, uint8_t *out);
+int  spmi_write(uint8_t sid, uint16_t addr, uint8_t value);
+
+uint16_t pmic_ldo_base(int n);
+void pmic_ldo_dump(int n);
+void pmic_dump_all(void);
+int  pmic_ldo_enable(int n);
+
 /* ---------------- USB в режиме устройства (Synopsys DWC3) ----------------
  * Собирается только для плат, где он есть. Всё, что печатается на экран,
  * попутно уходит в компьютер по проводу — ради этого он и поднимается. */

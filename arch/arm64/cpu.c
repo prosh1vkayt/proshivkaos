@@ -162,6 +162,13 @@ void hal_arch_init(void *boot_info) {
     early_fb_band(8, 128, 255, 128);   /* салатовая: счётчик пошёл */
     early_con_puts("5 schetchik, arch gotov\n");
 
+#ifdef CONFIG_PMIC_SPMI
+    /* Шина к микросхеме питания. Нужна и приёмопередатчику USB, и
+       тачскрину: оба питаются от источников, которые загрузчик гасит,
+       уходя. Поднимается раньше их обоих. */
+    if (spmi_init()) pmic_dump_all();
+#endif
+
 #ifdef CONFIG_USB_DWC3
     /* 6. Провод.
      *
