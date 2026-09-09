@@ -15,6 +15,8 @@ void vga_putc(char c);
 void vga_write(const char *s);
 void vga_set_color(uint8_t fg, uint8_t bg);
 void vga_reset_color(void);
+void vga_clear(void);
+void vga_set_cursor(int row, int col);
 int  keyboard_poll(void);
 char keyboard_getc_blocking(void);
 
@@ -44,4 +46,12 @@ void hal_console_set_color(uint8_t fg, uint8_t bg) {
 
 void hal_console_reset_color(void) {
     vga_reset_color();
+}
+
+void hal_console_clear(void) {
+    vga_clear();
+}
+
+void hal_console_goto(int row, int col) {
+    vga_set_cursor(row, col);
 }

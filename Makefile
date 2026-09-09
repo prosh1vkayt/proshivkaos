@@ -229,7 +229,6 @@ ifeq ($(ARCH),x86)
       hal/hal_console.c \
       arch/x86/vga.c arch/x86/keyboard.c arch/x86/cpu.c \
 	  shell/shell.c apps/editor.c
-      shell/shell.c
   TEXT_ASM := boot/boot.asm
 
   # Графический бэкенд экрана и ввода

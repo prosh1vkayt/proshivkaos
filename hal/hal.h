@@ -29,6 +29,20 @@ char hal_console_getc_blocking(void);
 void hal_console_set_color(uint8_t fg, uint8_t bg);
 void hal_console_reset_color(void);
 
+/* Очистить экран и поставить курсор в произвольную позицию (0-based,
+ * row/col обрезаются бэкендом до реальных границ экрана). Нужны для
+ * полноэкранных приложений вроде apps/editor.c, которым обычной
+ * последовательной печати уже недостаточно.
+ *
+ * РЕАЛИЗОВАНО ПОКА ТОЛЬКО ДЛЯ x86 (hal_console.c -> arch/x86/vga.c).
+ * ARM64-бэкенду (hal_console_arm64.c) эти две функции ещё предстоит
+ * добавить — например через ANSI/VT100-коды в UART: "\x1b[2J" для очистки,
+ * "\x1b[<row>;<col>H" для позиционирования (это понимает почти любой
+ * serial-терминал). Пока их там нет, всё, что тянет за собой эти вызовы
+ * (apps/editor.c через shell.c), не слинкуется под ARCH=arm64. */
+void hal_console_clear(void);
+void hal_console_goto(int row, int col);
+
 enum {
     HAL_COLOR_BLACK = 0,  HAL_COLOR_BLUE = 1,       HAL_COLOR_GREEN = 2,
     HAL_COLOR_CYAN  = 3,  HAL_COLOR_RED = 4,        HAL_COLOR_MAGENTA = 5,
@@ -36,6 +50,26 @@ enum {
     HAL_COLOR_LIGHT_BLUE = 9,  HAL_COLOR_LIGHT_GREEN = 10, HAL_COLOR_LIGHT_CYAN = 11,
     HAL_COLOR_LIGHT_RED = 12,  HAL_COLOR_LIGHT_MAGENTA = 13, HAL_COLOR_YELLOW = 14,
     HAL_COLOR_WHITE = 15
+};
+
+/* Специальные клавиши, не входящие в ASCII (стрелки, Home/End, Delete,
+ * PageUp/PageDown) — возвращаются hal_console_getc()/keyboard_poll() поверх
+ * обычных ASCII-кодов. Диапазон выбран заведомо выше 0xFF, чтобы не
+ * пересекаться ни с одним ASCII-символом.
+ *
+ * hal_console_getc_blocking() эти коды НЕ видит — она возвращает char и
+ * фильтрует их (см. arch/x86/keyboard.c). Для их получения нужен
+ * hal_console_getc() (int, -1 = нет данных), см. apps/editor.c. */
+enum {
+    HAL_KEY_UP = 0x100,
+    HAL_KEY_DOWN,
+    HAL_KEY_LEFT,
+    HAL_KEY_RIGHT,
+    HAL_KEY_HOME,
+    HAL_KEY_END,
+    HAL_KEY_DEL,
+    HAL_KEY_PAGE_UP,
+    HAL_KEY_PAGE_DOWN
 };
 
 /* ---------------- Память ---------------- */
