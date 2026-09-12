@@ -313,9 +313,11 @@ void hal_gfx_draw_char_scaled(int x, int y, char c, uint8_t fg, uint8_t bg, int 
         uint8_t bits = glyph[row];
         for (int col = 0; col < FONT_W; col++) {
             uint8_t color = ((bits >> (7 - col)) & 1) ? fg : bg;
-            for (int sy = 0; sy < scale; sy++)
-                for (int sx = 0; sx < scale; sx++)
-                    gfxfb_put_pixel(x + col * scale + sx, y + row * scale + sy, color);
+            /* Квадратик размером scale на scale — одним вызовом, а не
+               scale*scale отдельными точками. При нашем масштабе три это
+               девятикратная разница на каждой точке шрифта, а текста на
+               экране больше всего. */
+            gfxfb_fill_rect(x + col * scale, y + row * scale, scale, scale, color);
         }
     }
 }
@@ -337,9 +339,7 @@ void hal_gfx_draw_string_scaled(int x, int y, const char *s, uint8_t fg, int sca
             uint8_t bits = glyph[row];
             for (int col = 0; col < FONT_W; col++) {
                 if (!((bits >> (7 - col)) & 1)) continue;
-                for (int sy = 0; sy < scale; sy++)
-                    for (int sx = 0; sx < scale; sx++)
-                        gfxfb_put_pixel(cx + col * scale + sx, y + row * scale + sy, fg);
+                gfxfb_fill_rect(cx + col * scale, y + row * scale, scale, scale, fg);
             }
         }
         cx += FONT_W * scale;

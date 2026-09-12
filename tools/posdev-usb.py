@@ -13,6 +13,7 @@
     v   сказать, кто ты и на какой скорости
 
 Режимы:
+    ping   [сколько]      замерить отклик телефона
     listen <сек> [файл]   слушать до Ctrl-C
     dump   <сек> [файл]   забрать журнал и выйти самому
     cmd    <буква>        отдать команду и выйти
@@ -135,6 +136,62 @@ def main():
         return 1
 
     mode = sys.argv[1]
+
+    if mode == "ping":
+        # НАСТОЯЩИЙ ЗАМЕР, А НЕ "ВРОДЕ РАБОТАЕТ".
+        #
+        # Посылаем букву и ждём ответа, засекая время. Это проверяет всю
+        # цепочку разом: контроллер USB на телефоне, разбор команд, кольцо
+        # журнала, обратную передачу. Если отвечает — работает всё.
+        count = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+        dev = open_device(30.0)
+        if dev is None:
+            sys.stderr.write("posdev: устройство не появилось\n")
+            return 2
+        describe(dev)
+
+        # Сначала осушаем: в кольце мог накопиться журнал загрузки, и
+        # первый же ответ пришёл бы вперемешку с ним.
+        t = time.time()
+        while time.time() - t < 1.5:
+            try:
+                dev.read(EP_IN, 1024, timeout=200)
+            except usb.core.USBError:
+                pass
+
+        times = []
+        for i in range(count):
+            t0 = time.time()
+            if not send(dev, "p"):
+                print("%d: не ушло" % (i + 1))
+                continue
+            got = False
+            while time.time() - t0 < 2.0:
+                try:
+                    data = bytes(dev.read(EP_IN, 1024, timeout=300))
+                except usb.core.USBError:
+                    continue
+                if b"ping" in data:
+                    got = True
+                    break
+            dt = (time.time() - t0) * 1000.0
+            if got:
+                times.append(dt)
+                print("otvet ot mido-0001: %.1f ms" % dt)
+            else:
+                print("%d: net otveta" % (i + 1))
+            time.sleep(0.3)
+
+        usb.util.dispose_resources(dev)
+        print("---")
+        if times:
+            print("otpravleno %d, polucheno %d, poteryano %d%%"
+                  % (count, len(times), (count - len(times)) * 100 // count))
+            print("min/sred/max = %.1f/%.1f/%.1f ms"
+                  % (min(times), sum(times) / len(times), max(times)))
+            return 0
+        print("otveta net vovse")
+        return 1
 
     if mode == "cmd":
         ch = sys.argv[2] if len(sys.argv) > 2 else "p"

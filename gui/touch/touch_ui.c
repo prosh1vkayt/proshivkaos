@@ -465,6 +465,16 @@ static void handle_pointer(int type, int x, int y) {
     int in_nav = (y >= TM.screen_h - TM.nav_h);
 
     if (type == HAL_EV_POINTER_DOWN) {
+        /* Нажатие поверх нажатия означает, что отпускание потерялось.
+         *
+         * Само по себе это не беда — состояние мы сейчас перезапишем, —
+         * но остатки прошлого касания (какая кнопка была прижата, откуда
+         * начался жест) к новому отношения не имеют, и принимать решение
+         * по ним нельзя: получится действие, которого никто не просил. */
+        if (g_pointer_down) {
+            g_pressed_nav = g_pressed_icon = -1;
+            g_gesture_from_nav = 0;
+        }
         g_pointer_down = 1;
         g_gesture_x0 = x;
         g_gesture_y0 = y;
@@ -504,6 +514,14 @@ static void handle_pointer(int type, int x, int y) {
     }
 
     if (type != HAL_EV_POINTER_UP) return;
+
+    /* Отпускание без нажатия. Случается, когда нажатие потерялось по
+       дороге; действовать по нему нельзя — прижатой кнопки не было. */
+    if (!g_pointer_down) {
+        g_pressed_nav = g_pressed_icon = -1;
+        need_redraw(R_ALL);
+        return;
+    }
 
     g_pointer_down = 0;
     int pressed_nav  = g_pressed_nav;
