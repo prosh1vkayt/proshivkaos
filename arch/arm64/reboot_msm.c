@@ -43,6 +43,23 @@
 
 /* Виды сброса, которые понимает микросхема питания */
 #define PON_WARM_RESET          0x01
+
+/* НА КАКИХ МИКРОСХЕМАХ НАСТРАИВАТЬ СБРОС.
+ *
+ * В аппарате их две: основная (PM8953, ведомые 0 и 1) и вторая
+ * (PMI8950, ведомые 2 и 3). Настраивал я только основную — и
+ * перезагрузка уходила в систему вместо загрузчика.
+ *
+ * Подсказка нашлась в журнале самого Android, который posdev однажды
+ * забрал вместо нашего:
+ *
+ *   qcom,qpnp-power-on ...:qcom,pmi8950@2:qcom,power-on@800:
+ *   PMIC@SID2: configuring PON for reset
+ *
+ * То есть перед сбросом Android настраивает узел питания и на ВТОРОЙ
+ * микросхеме. Делаем так же: настраиваем обе, и довольно одной
+ * удавшейся. */
+static const uint8_t g_pon_sids[] = { 0, 2 };
 #define PON_HARD_RESET          0x07
 
 /* Смещения регистров сторожевого таймера — как в драйвере ядра. */
@@ -98,9 +115,13 @@ void msm_watchdog_report(void) {
      * обработчик провода, и задержка внутри него не прокручивает провод
      * — он заблокирован сам собой. Отчёт о том, почему перезагрузка
      * пошла не туда, до компьютера просто не доезжал. */
-    early_con_puts("REBOOT: uzel pitaniya 0008 prinadlezhit yadru ");
-    early_con_hex32((uint32_t)spmi_owner_of(0, PON_PS_HOLD_RESET_CTL));
-    early_con_puts("\n");
+    for (unsigned i = 0; i < sizeof(g_pon_sids); i++) {
+        early_con_puts("REBOOT: uzel pitaniya mikroshemy ");
+        early_con_hex8(g_pon_sids[i]);
+        early_con_puts(" prinadlezhit yadru ");
+        early_con_hex32((uint32_t)spmi_owner_of(g_pon_sids[i], PON_PS_HOLD_RESET_CTL));
+        early_con_puts("\n");
+    }
 
     early_con_puts("WDOG: vkl ");
     early_con_hex32(mmio_read32(BOARD_WDOG_BASE + WDOG_EN));
@@ -134,18 +155,32 @@ void hal_watchdog_pet(void) {
 }
 
 /* Настроить микросхему питания на перезапуск, а не на выключение. */
+static int pon_configure_sid(uint8_t sid, uint8_t reset_type);
+
 static int pon_configure(uint8_t reset_type) {
+    int ok = 0;
+    for (unsigned i = 0; i < sizeof(g_pon_sids); i++) {
+        int r = pon_configure_sid(g_pon_sids[i], reset_type);
+        early_con_puts("REBOOT: mikroshema ");
+        early_con_hex8(g_pon_sids[i]);
+        early_con_puts(r ? " nastroena\n" : " ne nastroilas\n");
+        if (r) ok = 1;
+    }
+    return ok;
+}
+
+static int pon_configure_sid(uint8_t sid, uint8_t reset_type) {
     early_con_puts("REBOOT: uzel pitaniya 0008, hozyain ");
     early_con_hex32((uint32_t)spmi_owner_of(0, PON_PS_HOLD_RESET_CTL));
     early_con_puts("\n");
 
     /* Запрет перед сменой настройки обязателен: менять вид сброса на
        взведённой защите микросхема не даёт. */
-    if (!spmi_write(0, PON_PS_HOLD_RESET_CTL2, 0)) return 0;
+    if (!spmi_write(sid, PON_PS_HOLD_RESET_CTL2, 0)) return 0;
     hal_time_delay_us(300);
 
-    if (!spmi_write(0, PON_PS_HOLD_RESET_CTL, reset_type)) return 0;
-    if (!spmi_write(0, PON_PS_HOLD_RESET_CTL2, PON_S2_RESET_EN)) return 0;
+    if (!spmi_write(sid, PON_PS_HOLD_RESET_CTL, reset_type)) return 0;
+    if (!spmi_write(sid, PON_PS_HOLD_RESET_CTL2, PON_S2_RESET_EN)) return 0;
 
     return 1;
 }
