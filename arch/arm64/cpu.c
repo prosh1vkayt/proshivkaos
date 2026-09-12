@@ -132,6 +132,22 @@ void hal_arch_init(void *boot_info) {
 
     ramoops_init(boot_info);
 
+    /* ХОД ЗАГРУЗКИ НА ЭКРАНЕ — ВМЕСТО ЖУРНАЛА.
+     *
+     * Журнал никуда не девается: он идёт в сохраняемую область и в
+     * провод. Но на экране от него был вред, и не только внешний —
+     * каждая строка это отрисовка знаков по всей ширине, то есть время,
+     * отнятое у самой загрузки.
+     *
+     * В отладочной сборке всё наоборот: текст на экране, анимации нет.
+     * Одно поверх другого нечитаемо, а выбирать приходится в пользу
+     * того, кто смотрит. */
+#ifdef CONFIG_DEBUG_TOUCH_PROBE
+    early_con_show(1);
+#else
+    boot_anim_begin();
+#endif
+
     /* Отметки этапов. Каждая следующая означает, что предыдущий шаг
      * прошёл целиком: журнал обрывается ровно там, где система умерла, и
      * это единственный способ узнать место падения, пока к отладочному
@@ -165,6 +181,7 @@ void hal_arch_init(void *boot_info) {
        пропуск. */
     early_fb_band(17, 0, 255, 255);     /* ярко-голубая: вернулись из mmu_init */
     early_con_puts("4 MMU vklyuchen\n");
+    boot_anim_step();
 
     ramoops_write("[4] sistemnyy schetchik\n");
     early_fb_band(19, 200, 0, 255);     /* фиолетовая: журнал пережит */
@@ -174,6 +191,7 @@ void hal_arch_init(void *boot_info) {
 
     early_fb_band(8, 128, 255, 128);   /* салатовая: счётчик пошёл */
     early_con_puts("5 schetchik, arch gotov\n");
+    boot_anim_step();
 #if defined(BOARD_WDOG_BASE) && !defined(CONFIG_WDOG_OFF)
     msm_watchdog_report();
 #endif
@@ -183,6 +201,7 @@ void hal_arch_init(void *boot_info) {
        тачскрину: оба питаются от источников, которые загрузчик гасит,
        уходя. Поднимается раньше их обоих. */
     if (spmi_init()) pmic_scan();
+    boot_anim_step();
 #endif
 
 
@@ -197,7 +216,28 @@ void hal_arch_init(void *boot_info) {
      *
      * Ему нужен счётчик времени (задержки приёмопередатчика расписаны в
      * микросекундах), поэтому не раньше пятого шага. */
-    usb_dwc3_init();
+    /* ПОДНИМАЕМ С ВТОРОЙ ПОПЫТКИ, ЕСЛИ ПЕРВАЯ НЕ УДАЛАСЬ.
+     *
+     * Приёмопередатчик захватывает частоту не всегда: примерно один
+     * заход из трёх заканчивался тем, что провод не поднимался вовсе. С
+     * отладкой по проводу это означает потерянный заход целиком — а
+     * повторная попытка стоит секунду.
+     *
+     * Ждём не просто подъёма контроллера, а того, что хост на другом
+     * конце ДОГОВОРИЛСЯ с нами до конца: контроллер лишь подтягивает
+     * линию, а на вопросы отвечает система, крутя очередь событий. */
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt) early_con_puts("USB: podnimaem zanovo\n");
+        usb_dwc3_init();
+
+        for (int i = 0; i < 3000 && !usb_dwc3_ready(); i++)
+            hal_time_delay_ms(1);
+
+        if (usb_dwc3_ready()) break;
+    }
+    early_con_puts(usb_dwc3_ready() ? "USB: hozyain dogovorilsya\n"
+                                    : "USB: hozyain ne otozvalsya, idyom dalshe\n");
+    boot_anim_step();
 #endif
 
 #ifdef CONFIG_RPM_SMD
@@ -217,14 +257,8 @@ void hal_arch_init(void *boot_info) {
      * Поэтому здесь мы ждём, пока хост выберет конфигурацию. С этого
      * мгновения журнал уходит на компьютер построчно, и что бы дальше
      * ни случилось, оно будет видно. */
-#ifdef CONFIG_USB_DWC3
-    for (int i = 0; i < 6000 && !usb_dwc3_ready(); i++)
-        hal_time_delay_ms(1);
-    early_con_puts(usb_dwc3_ready() ? "USB: hozyain dogovorilsya\n"
-                                    : "USB: hozyain ne otozvalsya, idyom dalshe\n");
-#endif
-
     smd_rpm_init();
+    boot_anim_step();
 #endif
 
     ramoops_write("[5] hal_arch_init zavershen\n");
@@ -238,6 +272,9 @@ void hal_debug_mark(int index, unsigned char r, unsigned char g, unsigned char b
 }
 
 void hal_debug_text(const char *s) { early_con_puts(s); }
+
+void hal_debug_progress(void)  { boot_anim_step(); }
+void hal_debug_boot_done(void) { boot_anim_end(); }
 
 void hal_cpu_halt(void) {
     __asm__ volatile ("msr daifset, #0xf");   /* замаскировать D/A/I/F */

@@ -55,6 +55,11 @@ void hal_debug_mark(int index, unsigned char r, unsigned char g, unsigned char b
 
 void hal_debug_text(const char *s) { (void)s; }
 
+/* Показывать ход загрузки на x86 нечем и незачем: там до графики
+ * добираются за миллисекунды. */
+void hal_debug_progress(void) { }
+void hal_debug_boot_done(void) { }
+
 void hal_arch_init(void *boot_info) {
     /* На x86 к моменту входа в kmain процессор уже в защищённом режиме с
        плоской моделью памяти — этим занимался GRUB. Разбирать структуру

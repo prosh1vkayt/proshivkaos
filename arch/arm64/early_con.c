@@ -76,9 +76,27 @@ static void draw_glyph(int x, int y, char c, uint8_t r, uint8_t g, uint8_t b) {
 
 /* Очистить область под текст. Полосы из boot.S сверху не трогаем: они
  * ставятся раньше всего и говорят, что загрузчик до нас доехал. */
-int early_con_active(void) { return g_active; }
+/* РИСОВАТЬ ЛИ ТЕКСТ НА ЭКРАНЕ.
+ *
+ * Журнал загрузки нужен всегда, а вот на экране он нужен только при
+ * отладке. В обычной сборке там показывается ход загрузки (boot_anim.c),
+ * и текст поверх него был бы нечитаем — а главное, каждая строка это
+ * отрисовка знаков по всему экрану, то есть время, отнятое у самой
+ * загрузки. В провод и в сохраняемую область журнал уходит независимо от
+ * этого признака. */
+static int g_to_screen = 0;
+
+void early_con_show(int on) { g_to_screen = on ? 1 : 0; }
+
+int early_con_active(void) { return g_active && g_to_screen; }
 
 void early_con_init(void) {
+    g_cx = 0;
+    g_cy = TEXT_TOP;
+    g_active = 1;
+
+    if (!g_to_screen) return;      /* экран отдан показу хода загрузки */
+
     for (int y = TEXT_TOP; y < BOARD_FB_HEIGHT; y++) {
         volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)BOARD_FB_ADDR
                             + (long)y * BOARD_FB_STRIDE;
@@ -88,9 +106,6 @@ void early_con_init(void) {
             p[i + 2] = 16;    /* экраном и путало                      */
         }
     }
-    g_cx = 0;
-    g_cy = TEXT_TOP;
-    g_active = 1;
 }
 
 void early_con_color(const char *s, uint8_t r, uint8_t g, uint8_t b) {
@@ -107,6 +122,8 @@ void early_con_color(const char *s, uint8_t r, uint8_t g, uint8_t b) {
      * сейчас, пока система работает. Пока USB не собран или не поднялся,
      * вызов бесплатный: ниже стоит слабая заглушка. */
     usb_log_write(s);
+
+    if (!g_to_screen) return;
 
     while (*s) {
         if (*s == '\n') {

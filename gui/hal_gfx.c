@@ -29,9 +29,10 @@ void hal_gfx_present(void) {
 }
 
 void hal_gfx_fill_rect(int x, int y, int w, int h, uint8_t color) {
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++)
-            gfxfb_put_pixel(x + i, y + j, color);
+    /* Заливка идёт целым прямоугольником, а не по пикселю: границы и
+       отсечение проверяются один раз на всю область, а не два миллиона
+       раз на заливке фона. */
+    gfxfb_fill_rect(x, y, w, h, color);
 }
 
 void hal_gfx_draw_rect(int x, int y, int w, int h, uint8_t color) {

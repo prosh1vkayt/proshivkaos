@@ -34,7 +34,7 @@ void early_fb_band(int index, uint8_t r, uint8_t g, uint8_t b) {
     /* Как только заработал текстовый вывод, полосы замолкают: они легли бы
        поверх строк и сделали бы их нечитаемыми. Полосы своё дело сделали —
        довели нас до места, где текст стало можно печатать. */
-    if (early_con_active()) return;
+    if (early_con_active() || boot_anim_active()) return;
 
     /* За нижний край экрана не вылезаем: там уже чужая память. */
     long first_row = (long)index * BAND_H;

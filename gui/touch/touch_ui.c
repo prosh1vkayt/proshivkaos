@@ -52,6 +52,30 @@ static int g_text_scale = 2;
 static int g_wallpaper_mode = WALLPAPER_GRADIENT;
 static int g_touch_dots = 0;
 
+/* ЧТО ИМЕННО ПЕРЕРИСОВАТЬ.
+ *
+ * Раньше здесь был один признак "надо перерисовать", и он означал целый
+ * экран. На телефоне это два миллиона пикселей: собрать кадр, перевести
+ * палитру в цвет и записать шесть мегабайт в память экрана — около
+ * ста миллисекунд.
+ *
+ * Пока таких перерисовок было по одной на нажатие, это просто выглядело
+ * медленным. Но палец на экране шлёт события движения десятки раз в
+ * секунду, и каждое стоило целого кадра: система не успевала дойти до
+ * отпускания пальца, а снаружи это выглядело как залипшая клавиша.
+ *
+ * Теперь признак разложен по областям, и они независимы — поэтому
+ * НАБОР РАЗРЯДОВ, а не уровень: подсветить клавишу и обновить часы
+ * может понадобиться одновременно, а это разные углы экрана. */
+#define R_STATUS  (1u << 0)     /* строка состояния: часы            */
+#define R_NAV     (1u << 1)     /* кнопки навигации                  */
+#define R_OSK     (1u << 2)     /* экранная клавиатура               */
+#define R_ALL     (1u << 3)     /* всё вместе, включая содержимое    */
+
+static unsigned g_redraw = R_ALL;
+
+static void need_redraw(unsigned what) { g_redraw |= what; }
+
 /* Последнее касание — для необязательной отметки на экране. */
 static int g_last_touch_x = -1, g_last_touch_y = -1;
 static int g_pointer_down = 0;
@@ -449,9 +473,15 @@ static void handle_pointer(int type, int x, int y) {
 
         if (in_nav) {
             g_pressed_nav = nav_button_at(x, y);
+            need_redraw(R_NAV);
             return;
         }
-        if (osk_contains(x, y)) { osk_handle_pointer(type, x, y); return; }
+        if (osk_contains(x, y)) {
+            osk_handle_pointer(type, x, y);
+            need_redraw(R_OSK);
+            return;
+        }
+        need_redraw(R_ALL);
 
         if (g_screen == SCREEN_HOME)      g_pressed_icon = icon_at(x, y);
         else if (g_screen == SCREEN_APP && g_current >= 0)
@@ -461,9 +491,15 @@ static void handle_pointer(int type, int x, int y) {
 
     if (type == HAL_EV_POINTER_MOVE) {
         if (g_gesture_from_nav) return;   /* тянем из навбара — это жест */
-        if (osk_visible() && osk_contains(x, y)) { osk_handle_pointer(type, x, y); return; }
-        if (g_screen == SCREEN_APP && g_current >= 0)
+        if (osk_visible() && osk_contains(x, y)) {
+            osk_handle_pointer(type, x, y);
+            need_redraw(R_OSK);
+            return;
+        }
+        if (g_screen == SCREEN_APP && g_current >= 0) {
             g_apps[g_current]->on_touch(type, x, y);
+            need_redraw(R_ALL);
+        }
         return;
     }
 
@@ -480,28 +516,40 @@ static void handle_pointer(int type, int x, int y) {
        дрожанием пальца на кнопке навбара. */
     if (g_gesture_from_nav && (g_gesture_y0 - y) > TM.touch * 3 / 2) {
         touch_ui_go_home();
+        need_redraw(R_ALL);
         return;
     }
 
     if (g_gesture_from_nav) {
         /* Не жест, а обычное нажатие кнопки: срабатывает, только если
            отпустили на той же кнопке. */
-        if (pressed_nav >= 0 && nav_button_at(x, y) == pressed_nav)
+        need_redraw(R_NAV);
+        if (pressed_nav >= 0 && nav_button_at(x, y) == pressed_nav) {
             handle_nav_action(pressed_nav);
+            need_redraw(R_ALL);
+        }
         return;
     }
 
     if (osk_visible() && osk_contains(x, y)) {
         int key = osk_handle_pointer(type, x, y);
-        if (key && g_screen == SCREEN_APP && g_current >= 0)
+        /* Подсветка снялась в любом случае — клавиатуру перерисовать
+           надо. А вот содержимое приложения меняется только если символ
+           действительно выдан. */
+        need_redraw(R_OSK);
+        if (key && g_screen == SCREEN_APP && g_current >= 0) {
             g_apps[g_current]->on_key(key);
+            need_redraw(R_ALL);
+        }
         /* Клавиатуру могли спрятать клавишей "убрать" — область
            приложения из-за этого выросла. */
         relayout_current_app();
         return;
     }
     /* Палец ушёл с клавиатуры мимо — снимаем подсветку клавиши. */
-    if (osk_visible()) osk_handle_pointer(type, x, y);
+    if (osk_visible()) { osk_handle_pointer(type, x, y); need_redraw(R_OSK); }
+
+    need_redraw(R_ALL);
 
     if (g_screen == SCREEN_HOME) {
         if (pressed_icon >= 0 && icon_at(x, y) == pressed_icon)
@@ -569,6 +617,7 @@ void touch_main(void) {
     hal_input_init();
     hal_input_set_screen(w, h);
     hal_debug_text("7 vvod podnyat\n");
+    hal_debug_progress();
 
     for (int i = 0; i < APP_COUNT; i++) g_launched[i] = 0;
 
@@ -581,6 +630,7 @@ void touch_main(void) {
     /* Метка: приложения поднялись. Дальше остаётся первая отрисовка. */
     hal_debug_mark(24, 255, 255, 0);
     hal_debug_text("8 prilozheniya podnyaty\n");
+    hal_debug_progress();
 
     /* Если устройств ввода не нашлось — а на новом железе так и будет,
        пока нет драйвера тачскрина, — управлять оболочкой нечем. Полезнее
@@ -606,28 +656,55 @@ void touch_main(void) {
     hal_debug_mark(25, 0, 255, 0);
     hal_debug_text("10 risuem pervyy kadr\n");
 
+    /* Показ хода загрузки закончен: следующий кадр рисует уже система, и
+       заливать экран заново перед этим незачем — вышла бы вспышка. */
+    hal_debug_boot_done();
+
     render_frame();
 
     for (;;) {
-        int dirty = 0;
-
         hal_input_event_t ev;
         while (hal_input_poll(&ev)) {
-            if (ev.type == HAL_EV_KEY) handle_key(ev.key);
-            else                        handle_pointer(ev.type, ev.x, ev.y);
-            dirty = 1;
+            if (ev.type == HAL_EV_KEY) { handle_key(ev.key); need_redraw(R_ALL); }
+            else                         handle_pointer(ev.type, ev.x, ev.y);
         }
 
-        /* Раз в секунду — ради часов в статусбаре. Полная перерисовка
-           экрана по таймеру, а не по событию: покадровой анимации у нас
-           нет, а раз в секунду это заметно дешевле, чем гнать кадры
-           постоянно. */
+        /* Раз в секунду — ради часов. Раньше по этому поводу
+           перерисовывался весь экран; теперь только строка состояния,
+           а это полоса в полтора процента кадра. */
         uint64_t now = hal_time_ms();
-        if (now - g_last_render_ms >= 1000) dirty = 1;
-
-        if (dirty) {
+        if (now - g_last_render_ms >= 1000) {
             g_last_render_ms = now;
-            render_frame();
+            need_redraw(R_STATUS);
         }
+
+        if (!g_redraw) {
+            /* НЕ КРУТИТЬСЯ ВХОЛОСТУЮ.
+             *
+             * Пока кадр отдавался целиком, оборот цикла занимал сотню
+             * миллисекунд, и пустой проход был немыслим. Теперь
+             * перерисовывается только изменившееся, и в покое цикл
+             * начал наматывать сотни тысяч оборотов в секунду — впустую
+             * опрашивая ввод, провод и сторожевой таймер.
+             *
+             * Пять миллисекунд — двести оборотов в секунду. Для пальца
+             * это мгновенно (сам сенсор опрашивается раз в восемь
+             * миллисекунд), а нагрузка падает на три порядка. */
+            hal_time_delay_ms(5);
+            continue;
+        }
+
+        if (g_redraw & R_ALL) {
+            render_frame();
+        } else {
+            /* Порядок важен: клавиатура и панели перекрываются краями,
+               и рисовать их надо в том же порядке, что и в целом кадре. */
+            if (g_redraw & R_OSK)    osk_render();
+            if (g_redraw & R_STATUS) draw_status_bar();
+            if (g_redraw & R_NAV)    draw_nav_bar();
+            hal_gfx_present();
+        }
+
+        g_redraw = 0;
     }
 }

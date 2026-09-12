@@ -82,6 +82,9 @@ void arch_dcache_clean(const void *addr, size_t len);
 void early_fb_band(int index, uint8_t r, uint8_t g, uint8_t b);
 void early_fb_alert(void);
 void early_con_init(void);
+/* Печатать ли журнал ещё и на экране. По умолчанию нет: там показывается
+ * ход загрузки. В провод и в сохраняемую область он идёт всегда. */
+void early_con_show(int on);
 void early_con_puts(const char *s);
 void early_con_color(const char *s, uint8_t r, uint8_t g, uint8_t b);
 void early_con_hex(uint64_t v);
@@ -91,6 +94,7 @@ void early_con_hex32(uint32_t v);
 #define early_fb_band(i, r, g, b) do { (void)(i); (void)(r); (void)(g); (void)(b); } while (0)
 #define early_fb_alert()          do { } while (0)
 #define early_con_init()          do { } while (0)
+#define early_con_show(on)        do { (void)(on); } while (0)
 #define early_con_puts(s)         do { (void)(s); } while (0)
 #define early_con_color(s, r, g, b) do { (void)(s); (void)(r); (void)(g); (void)(b); } while (0)
 #define early_con_hex(v)          do { (void)(v); } while (0)
@@ -202,6 +206,26 @@ void pmic_scan(void);
  * целиком, а не только то, что напечатано после подключения. */
 int ramoops_snapshot(const volatile unsigned char **data, uint32_t *len);
 int  pmic_ldo_enable(int n);
+
+/* ---------------- Ход загрузки на экране ----------------
+ * Показывается вместо текстового журнала: тот уходит в провод и в
+ * сохраняемую область, а на экране видно, что система поднимается. */
+#ifdef CONFIG_EARLY_FB_MARKS
+void boot_anim_begin(void);
+void boot_anim_stage(int done, int total);
+void boot_anim_step(void);
+void boot_anim_tick(void);
+void boot_anim_end(void);
+int  boot_anim_active(void);
+#else
+/* Плата без готового кадра от загрузчика: показывать ход загрузки негде.
+ * Вызывающим об этом знать незачем — как и в случае с early_con. */
+#define boot_anim_begin()           do { } while (0)
+#define boot_anim_stage(d, t)       do { (void)(d); (void)(t); } while (0)
+#define boot_anim_step()            do { } while (0)
+#define boot_anim_end()             do { } while (0)
+#define boot_anim_active()          0
+#endif
 
 /* ---------------- Сопроцессор питания ----------------
  *

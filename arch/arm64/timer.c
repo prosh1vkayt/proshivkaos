@@ -109,10 +109,14 @@ void hal_time_delay_us(uint32_t us) {
  * платах, где их нет, обе раскрываются в пустоту. */
 __attribute__((weak)) void hal_usb_pump(void) { }
 __attribute__((weak)) void hal_watchdog_pet(void) { }
+__attribute__((weak)) void boot_anim_tick(void) { }
 
 void hal_background_poll(void) {
     hal_watchdog_pet();
     hal_usb_pump();
+    /* Пока идёт загрузка — двигаем полосу. Она рисует один небольшой
+       прямоугольник, поэтому её можно звать из любого ожидания. */
+    boot_anim_tick();
 }
 
 void hal_time_delay_ms(uint32_t ms) {

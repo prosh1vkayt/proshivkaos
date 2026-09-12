@@ -407,10 +407,19 @@ static int sub_xfer(uint64_t base, uint8_t addr, int is_rx, int is_first, int is
     int total_tx = n + (is_rx ? 0 : len);
     int total_rx = is_rx ? (RX_TAG_LEN + len) : 0;
 
-    early_con_puts(is_rx ? "I2C chtenie:" : "I2C zapis:");
-    for (int i = 0; i < n; i++) { early_con_puts(" "); early_con_hex8(tags[i]); }
-    if (!is_rx) for (int i = 0; i < len; i++) { early_con_puts(" "); early_con_hex8(wbuf[i]); }
-    early_con_puts("\n");
+    /* Посылка печатается только под следом.
+     *
+     * Пока шина не работала, эти две строки были самым ценным в журнале.
+     * Теперь тачскрин опрашивается десятки раз в секунду, и каждая
+     * строка — это отрисовка текста по экрану, запись в сохраняемую
+     * область и отправка в провод. Отладка шины превратилась в главный
+     * потребитель времени системы. */
+    if (g_trace) {
+        early_con_puts(is_rx ? "I2C chtenie:" : "I2C zapis:");
+        for (int i = 0; i < n; i++) { early_con_puts(" "); early_con_hex8(tags[i]); }
+        if (!is_rx) for (int i = 0; i < len; i++) { early_con_puts(" "); early_con_hex8(wbuf[i]); }
+        early_con_puts("\n");
+    }
 
     /* Счётчики. Разряд 31 — «настройка меняется на ходу»; он обязателен
        для всех подтранзакций кроме первой, потому что все остальные
