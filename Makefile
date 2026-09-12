@@ -61,11 +61,6 @@ ifeq ($(ARCH),x86)
   endif
 
   ARCH_CFLAGS  := $(CFLAGS_HOST_FALLBACK)
-# ARCH_CFLAGS  := $(CFLAGS_HOST_FALLBACK) \
-                  -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 \
-                  -mno-sse4 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 \
-                  -mno-3dnow -msoft-float
-
   LINKER_SCRIPT := linker.ld
   LDFLAGS      := -T $(LINKER_SCRIPT) -nostdlib -m elf_i386
   ASFLAGS      := -f elf32
@@ -205,7 +200,6 @@ CORE_SOURCES := \
     kernel/kstring.c \
     hal/hal_mem.c \
     hal/hal_thread.c \
-#	kernel/libgcc_shim.c \
     fs/ramfs.c
 
 # --- Графика, общая для всех платформ --------------------------------------
@@ -264,7 +258,7 @@ else
   TEXT_SOURCES := $(CORE_SOURCES) $(ARCH_BASE_SOURCES) \
       kernel/kernel.c kernel/panic.c \
       hal/hal_console_arm64.c \
-      shell/shell.c
+      shell/shell.c apps/editor.c
   TEXT_ASM :=
 
   ARCH_GFX_SOURCES := \
@@ -283,7 +277,6 @@ else
   endif
   ifneq ($(call cfg,I2C_QUP),)
     ARCH_INPUT_SOURCES += arch/arm64/i2c_qup.c arch/arm64/i2c_bitbang.c
-#	ARCH_INPUT_SOURCES += arch/arm64/i2c_qup.c
   endif
   ifneq ($(call cfg,TOUCH_FT5X06),)
     ARCH_INPUT_SOURCES += arch/arm64/touch_ft5x06.c
