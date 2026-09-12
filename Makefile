@@ -222,7 +222,7 @@ ifeq ($(ARCH),x86)
       kernel/kernel.c kernel/panic.c \
       hal/hal_console.c \
       arch/x86/vga.c arch/x86/keyboard.c arch/x86/cpu.c \
-      shell/shell.c
+	  shell/shell.c apps/editor.c
   TEXT_ASM := boot/boot.asm
 
   # Графический бэкенд экрана и ввода
@@ -258,7 +258,7 @@ else
   TEXT_SOURCES := $(CORE_SOURCES) $(ARCH_BASE_SOURCES) \
       kernel/kernel.c kernel/panic.c \
       hal/hal_console_arm64.c \
-      shell/shell.c
+      shell/shell.c apps/editor.c
   TEXT_ASM :=
 
   ARCH_GFX_SOURCES := \

@@ -44,6 +44,45 @@ void hal_console_putc(char c) {
     uart_putc(c);
 }
 
+/* ОЧИСТКА ЭКРАНА И ПОЗИЦИОНИРОВАНИЕ КУРСОРА.
+ *
+ * Понадобились полноэкранному редактору (apps/editor.c). На x86 за ними
+ * стоит настоящий текстовый режим VGA с аппаратным курсором; здесь
+ * консоль — это последовательный порт, и никакого курсора у неё нет.
+ *
+ * Зато есть общепринятый язык управляющих последовательностей VT100,
+ * который понимает любой терминал на другом конце провода. Так это и
+ * сделано: "очистить экран" и "курсор в строку и столбец". Нумерация у
+ * VT100 с единицы, у нас с нуля — поэтому прибавляем.
+ *
+ * Автор редактора оставил здесь заметку, что этих двух функций не
+ * хватает и без них arm64 не слинкуется. Так и было: четыре цели сборки
+ * из шести падали. */
+static void vt_number(int n) {
+    char buf[8];
+    int i = 0;
+    if (n <= 0) { hal_console_putc('1'); return; }
+    while (n > 0 && i < (int)sizeof(buf)) { buf[i++] = (char)('0' + n % 10); n /= 10; }
+    while (i > 0) hal_console_putc(buf[--i]);
+}
+
+void hal_console_clear(void) {
+    hal_console_putc('\x1b'); hal_console_putc('[');
+    hal_console_putc('2');    hal_console_putc('J');
+    hal_console_putc('\x1b'); hal_console_putc('[');
+    hal_console_putc('H');
+}
+
+void hal_console_goto(int row, int col) {
+    if (row < 0) row = 0;
+    if (col < 0) col = 0;
+    hal_console_putc('\x1b'); hal_console_putc('[');
+    vt_number(row + 1);
+    hal_console_putc(';');
+    vt_number(col + 1);
+    hal_console_putc('H');
+}
+
 void hal_console_write(const char *s) {
     uart_write(s);
 }

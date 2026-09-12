@@ -1,8 +1,15 @@
 /* shell/shell.c — встроенная командная строка поверх RamFS.
  * Использует только hal.h и ramfs.h — работает одинаково на x86 и ARM64.
+ *
+ * ВАЖНО про cmd_edit(): полноэкранный редактор в apps/editor.c зовёт
+ * hal_console_clear()/hal_console_goto(), которые пока реализованы только
+ * для x86 (см. комментарий у их объявления в hal.h). Поэтому сборка
+ * ARCH=arm64 text/run сейчас не слинкуется, пока в hal_console_arm64.c не
+ * появятся такие же clear/goto — см. hal.h.
  */
 #include "hal.h"
 #include "ramfs.h"
+#include "editor.h"
 
 #define CMD_BUF_SIZE   128
 #define CMD_MAX_ARGS   4
@@ -10,12 +17,6 @@
 static int str_eq(const char *a, const char *b) {
     while (*a && *b) { if (*a != *b) return 0; a++; b++; }
     return *a == *b;
-}
-
-static size_t str_len(const char *s) {
-    size_t n = 0;
-    while (s[n]) n++;
-    return n;
 }
 
 /* Читает одну строку с консоли (echo включён), без строчного буфера ОС —
@@ -127,56 +128,29 @@ static void cmd_neofetch(void) {
     hal_console_write("arch   : x86 (multiboot)\n");
 }
 
+/* Полноэкранный редактор (apps/editor.c) — binды в стиле micro:
+ * Ctrl+S sohranit, Ctrl+Q vyhod, Ctrl+F poisk. Файл создаётся при
+ * отсутствии автоматически внутри editor_run() при первом сохранении. */
 static void cmd_edit(int argc, char *argv[]) {
     if (argc < 2) {
         hal_console_write("usage: edit <file>\n");
         return;
     }
 
-    /* Файл должен существовать — создаём при отсутствии, как touch. */
     ramfs_touch(argv[1]);
-
-    hal_console_set_color(HAL_COLOR_DARK_GREY, HAL_COLOR_BLACK);
-    hal_console_write("-- redaktor: vvodi stroki, odna stroka '.' - sohranit i vyyti --\n");
-    hal_console_reset_color();
-
-    static char buf[RAMFS_MAX_FILE_SIZE];
-    size_t total = 0;
-
-    for (;;) {
-        char line[CMD_BUF_SIZE];
-        read_line(line, CMD_BUF_SIZE);
-
-        if (str_eq(line, ".")) break;
-
-        size_t len = str_len(line);
-        if (total + len + 1 >= RAMFS_MAX_FILE_SIZE) {
-            hal_console_write("edit: fayl slishkom bolshoy, obrezano\n");
-            break;
-        }
-
-        for (size_t i = 0; i < len; i++) buf[total++] = line[i];
-        buf[total++] = '\n';
-    }
-
-    ramfs_write(argv[1], buf, total);
-
-    hal_console_set_color(HAL_COLOR_LIGHT_GREEN, HAL_COLOR_BLACK);
-    hal_console_write("sohraneno: ");
-    hal_console_write(argv[1]);
-    hal_console_putc('\n');
-    hal_console_reset_color();
+    editor_run(argv[1]);
 }
 
 static void cmd_help(void) {
     hal_console_write(
         "Dostupnye komandy:\n"
-        "  ls               - spisok faylov\n"
-        "  cat <file>        - pokazat soderzhimoe fayla\n"
+        "  ls                 - spisok faylov\n"
+        "  cat <file>         - pokazat soderzhimoe fayla\n"
         "  touch <file>       - sozdat pustoy fayl\n"
-        "  edit <file>         - prostoy tekstovyy redaktor (stroka '.' - sohranit)\n"
+        "  edit <file>        - polnoekrannyy redaktor\n"
+        "                       (^S sohranit, ^Q vyhod, ^F poisk)\n"
         "  neofetch           - info o sisteme\n"
-        "  help                - eta spravka\n"
+        "  help               - eta spravka\n"
     );
 }
 
