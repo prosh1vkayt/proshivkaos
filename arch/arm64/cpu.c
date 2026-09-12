@@ -192,15 +192,23 @@ void hal_arch_init(void *boot_info) {
     early_fb_band(8, 128, 255, 128);   /* салатовая: счётчик пошёл */
     early_con_puts("5 schetchik, arch gotov\n");
     boot_anim_step();
-#if defined(BOARD_WDOG_BASE) && !defined(CONFIG_WDOG_OFF)
-    msm_watchdog_report();
-#endif
+
 
 #ifdef CONFIG_PMIC_SPMI
     /* Шина к микросхеме питания. Нужна и приёмопередатчику USB, и
        тачскрину: оба питаются от источников, которые загрузчик гасит,
        уходя. Поднимается раньше их обоих. */
     if (spmi_init()) pmic_scan();
+
+#if defined(BOARD_WDOG_BASE) && !defined(CONFIG_WDOG_OFF)
+    /* ПОСЛЕ подъёма шины к микросхеме питания, а не до.
+     *
+     * Отчёт спрашивает, кому принадлежит узел управления питанием, — а
+     * до spmi_init() таблица каналов ещё не прочитана, и ответ выходил
+     * "владельца нет". Я на этот ответ чуть не списал неработающую
+     * перезагрузку. */
+    msm_watchdog_report();
+#endif
     boot_anim_step();
 #endif
 

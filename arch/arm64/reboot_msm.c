@@ -91,6 +91,17 @@ void msm_watchdog_arm(void) {
  * прямо там было некуда. Один заход так и прошёл в недоумении, завёлся
  * ли он вообще. */
 void msm_watchdog_report(void) {
+    /* Заодно спрашиваем, кому принадлежит узел управления питанием.
+     *
+     * Через него идёт перезагрузка, и спросить об этом НАДО ЗДЕСЬ, при
+     * загрузке. В момент самой перезагрузки не получается: её вызывает
+     * обработчик провода, и задержка внутри него не прокручивает провод
+     * — он заблокирован сам собой. Отчёт о том, почему перезагрузка
+     * пошла не туда, до компьютера просто не доезжал. */
+    early_con_puts("REBOOT: uzel pitaniya 0008 prinadlezhit yadru ");
+    early_con_hex32((uint32_t)spmi_owner_of(0, PON_PS_HOLD_RESET_CTL));
+    early_con_puts("\n");
+
     early_con_puts("WDOG: vkl ");
     early_con_hex32(mmio_read32(BOARD_WDOG_BASE + WDOG_EN));
     early_con_puts(" lay ");
