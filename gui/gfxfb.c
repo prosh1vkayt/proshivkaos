@@ -142,6 +142,28 @@ void gfxfb_put_pixel(int x, int y, uint8_t color) {
  * пересчёт грязной области. На заливке фона целого экрана это два
  * миллиона таких проходов там, где достаточно тысячи девятисот двадцати
  * заполнений строк. */
+/* Заполнить одинаковым байтом, по восемь байт за раз.
+ *
+ * Бэкбуфер — обычная кэшируемая память, и побайтная запись в неё стоит
+ * ровно в восемь раз дороже, чем нужно. Заливка целого экрана это два
+ * миллиона байт: разница в четверть миллиона обращений против двух
+ * миллионов заметна даже на фоне отдачи кадра. */
+static void fill_run(uint8_t *p, int n, uint8_t color) {
+    /* Хвост до выравнивания — побайтно. */
+    while (n > 0 && (((uintptr_t)p) & 7)) { *p++ = color; n--; }
+
+    uint64_t eight = (uint64_t)color;
+    eight |= eight << 8;  eight |= eight << 16;  eight |= eight << 32;
+
+    while (n >= 8) { *(uint64_t *)p = eight; p += 8; n -= 8; }
+    while (n-- > 0) *p++ = color;
+}
+
+static void fill_run_rows(int x0, int y0, int w, int h, uint8_t color) {
+    for (int j = 0; j < h; j++)
+        fill_run(&g_backbuffer[(long)(y0 + j) * g_width + x0], w, color);
+}
+
 void gfxfb_fill_rect(int x, int y, int w, int h, uint8_t color) {
     if (w <= 0 || h <= 0) return;
 
@@ -161,17 +183,13 @@ void gfxfb_fill_rect(int x, int y, int w, int h, uint8_t color) {
     if (y1 > g_height) y1 = g_height;
     if (x0 >= x1 || y0 >= y1) return;
 
-    for (int j = y0; j < y1; j++) {
-        uint8_t *row = &g_backbuffer[(long)j * g_width + x0];
-        for (int i = 0; i < x1 - x0; i++) row[i] = color;
-    }
+    fill_run_rows(x0, y0, x1 - x0, y1 - y0, color);
 
     dirty_rect(x0, y0, x1 - x0, y1 - y0);
 }
 
 void gfxfb_clear(uint8_t color) {
-    long n = (long)g_width * (long)g_height;
-    for (long i = 0; i < n; i++) g_backbuffer[i] = color;
+    fill_run(g_backbuffer, (int)((long)g_width * (long)g_height), color);
     dirty_all();
 }
 
