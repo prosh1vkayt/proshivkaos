@@ -366,6 +366,7 @@ static void draw_recents(void) {
 /* ---------------- Отрисовка кадра ---------------- */
 
 static void render_frame(void) {
+    hal_debug_activity(HAL_ACT_RENDER);
     if (g_screen == SCREEN_APP && g_current >= 0) {
         /* Приложение рисует свой фон само — обои под ним не нужны и
            только съедали бы время на заливку целого экрана. */
@@ -708,6 +709,7 @@ void touch_main(void) {
              * Пять миллисекунд — двести оборотов в секунду. Для пальца
              * это мгновенно (сам сенсор опрашивается раз в восемь
              * миллисекунд), а нагрузка падает на три порядка. */
+            hal_debug_activity(HAL_ACT_IDLE);
             hal_time_delay_ms(5);
             continue;
         }

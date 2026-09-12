@@ -123,6 +123,18 @@ void hal_debug_text(const char *s);
 void hal_debug_progress(void);
 void hal_debug_boot_done(void);
 
+/* Чем система занята прямо сейчас. Записывается туда, где переживёт
+ * перезагрузку, и при следующем запуске докладывается: аппарат
+ * перезагружается сам, а журнал обрывается задолго до смерти. Значения —
+ * HAL_ACT_* ниже. На платах без такой памяти вызов бесплатный. */
+#define HAL_ACT_IDLE    1
+#define HAL_ACT_INPUT   2
+#define HAL_ACT_TOUCH   3
+#define HAL_ACT_RENDER  4
+#define HAL_ACT_USB     5
+#define HAL_ACT_RPM     6
+void hal_debug_activity(int what);
+
 /* Человекочитаемое имя платформы ("X86", "ARM64") — для neofetch и экрана
  * "О системе". Единственный способ узнать архитектуру выше HAL, не
  * заводя #ifdef в прикладном коде. */

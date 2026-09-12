@@ -340,6 +340,7 @@ int ft5x06_poll(int *x, int *y, int *pressed) {
        рассогласованную картину, если палец сдвинулся между ними. */
     uint8_t buf[FT_HEADER_BYTES + FT_BYTES_PER_TOUCH];
 
+    blackbox_mark(BB_TAG_TOUCH);
     if (!ts_read(FT_REG_MODE, buf, (int)sizeof(buf)))
         return 0;
 

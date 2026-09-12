@@ -249,7 +249,7 @@ else
   # Постоянный журнал есть не у всякой платы: он пишет в область ОЗУ,
   # которую устройство само исключило из общего пула. У QEMU такой нет.
   ifneq ($(call cfg,LOG_RAMOOPS),)
-    ARCH_BASE_SOURCES += arch/arm64/ramoops.c
+    ARCH_BASE_SOURCES += arch/arm64/ramoops.c arch/arm64/blackbox.c
   endif
   ifneq ($(call cfg,EARLY_FB_MARKS),)
     ARCH_BASE_SOURCES += arch/arm64/early_fb.c arch/arm64/early_con.c arch/arm64/boot_anim.c

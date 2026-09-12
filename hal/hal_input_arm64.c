@@ -19,6 +19,7 @@
 #include "hal_input.h"
 #include "arm64.h"
 #include "hal_time.h"
+#include "hal.h"
 
 int uart_getc(void);
 
@@ -332,6 +333,7 @@ int hal_input_poll(hal_input_event_t *ev) {
      * делает каждый кадр. Это единственное место, которое гарантированно
      * вызывается постоянно, поэтому вопросы хоста разбираются здесь. */
     hal_background_poll();
+    hal_debug_activity(HAL_ACT_INPUT);
 
     if (g_head == g_tail)
         pump_hardware();

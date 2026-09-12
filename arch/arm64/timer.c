@@ -117,6 +117,7 @@ void hal_background_poll(void) {
     /* Пока идёт загрузка — двигаем полосу. Она рисует один небольшой
        прямоугольник, поэтому её можно звать из любого ожидания. */
     boot_anim_tick();
+    blackbox_heartbeat();
 }
 
 void hal_time_delay_ms(uint32_t ms) {

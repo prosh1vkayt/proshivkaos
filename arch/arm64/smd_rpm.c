@@ -420,6 +420,8 @@ void smd_rpm_poll(void) {
     if (now - last < RPM_POLL_INTERVAL_MS) return;
     last = now;
 
+    blackbox_mark(BB_TAG_RPM);
+
     /* Признак смены состояния снимаем всегда: пока он поднят,
        сопроцессор считает, что мы его не услышали. */
     if (fld_get(1, FLD_fSTATE)) fld_set(1, FLD_fSTATE, 0);

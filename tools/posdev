@@ -232,7 +232,20 @@ cmd_cycle() {
         # перезагрузкой.
         if cmd_dump "$WAIT"; then
             say "posdev: журнал в $OUT"
-            say "posdev: телефон работает в proshivkaOS NEXT"
+
+            # ЖИВ ЛИ ОН ЕЩЁ.
+            #
+            # Раньше здесь стояло "телефон работает в proshivkaOS NEXT" —
+            # и это была неправда чаще, чем правда: система
+            # перезагружается сама через десятки секунд, и человек видел
+            # Android, а в выводе — бодрое сообщение.
+            if python3 -c 'import usb.core,sys; sys.exit(0 if usb.core.find(idVendor=0x1209,idProduct=0x0001) else 1)' 2>/dev/null; then
+                say "posdev: телефон работает в proshivkaOS NEXT"
+            else
+                say "posdev: телефон УЖЕ УШЁЛ с провода — перезагрузился сам."
+                say "         причину скажет чёрный ящик на следующей загрузке"
+                say "         (строка BB: в журнале)"
+            fi
             return 0
         fi
         say "posdev: по проводу не отозвался — иду длинным путём"

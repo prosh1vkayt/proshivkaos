@@ -762,6 +762,7 @@ void usb_dwc3_poll(void) {
 
     uint32_t count = rd(GEVNTCOUNT0) & 0xFFFC;
     if (count) {
+        blackbox_mark(BB_TAG_USB);
         uint32_t left = count;
         volatile uint32_t *q = (volatile uint32_t *)dma_at(DMA_EVT);
         while (left) {

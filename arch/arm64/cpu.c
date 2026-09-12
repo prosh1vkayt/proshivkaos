@@ -132,6 +132,11 @@ void hal_arch_init(void *boot_info) {
 
     ramoops_init(boot_info);
 
+    /* Чёрный ящик — сразу за журналом. Первым делом он докладывает, чем
+       была занята система в последний миг прошлого запуска: аппарат
+       перезагружается сам, и это единственный способ узнать где. */
+    blackbox_init();
+
     /* ХОД ЗАГРУЗКИ НА ЭКРАНЕ — ВМЕСТО ЖУРНАЛА.
      *
      * Журнал никуда не девается: он идёт в сохраняемую область и в
@@ -305,6 +310,7 @@ void hal_debug_text(const char *s) { early_con_puts(s); }
 
 void hal_debug_progress(void)  { boot_anim_step(); }
 void hal_debug_boot_done(void) { boot_anim_end(); }
+void hal_debug_activity(int what)  { blackbox_mark((uint32_t)what); }
 
 void hal_cpu_halt(void) {
     __asm__ volatile ("msr daifset, #0xf");   /* замаскировать D/A/I/F */

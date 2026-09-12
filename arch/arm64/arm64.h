@@ -210,6 +210,31 @@ void pmic_report_reset_reasons(void);
 int ramoops_snapshot(const volatile unsigned char **data, uint32_t *len);
 int  pmic_ldo_enable(int n);
 
+/* ---------------- Чёрный ящик ----------------
+ * Переживает перезагрузку и говорит, чем система была занята в
+ * последний миг. Нужен потому, что аппарат перезагружается сам, а
+ * журнал обрывается задолго до смерти: работающая система печатает
+ * редко. См. arch/arm64/blackbox.c. */
+#define BB_TAG_BOOT    0
+#define BB_TAG_IDLE    1
+#define BB_TAG_INPUT   2
+#define BB_TAG_TOUCH   3
+#define BB_TAG_RENDER  4
+#define BB_TAG_USB     5
+#define BB_TAG_RPM     6
+
+#ifdef CONFIG_LOG_RAMOOPS
+void blackbox_init(void);
+void blackbox_mark(uint32_t tag);
+void blackbox_heartbeat(void);
+#else
+/* Плата без памяти, переживающей перезагрузку: записывать некуда, а
+ * вызывающим об этом знать незачем. */
+#define blackbox_init()        do { } while (0)
+#define blackbox_mark(t)       do { (void)(t); } while (0)
+#define blackbox_heartbeat()   do { } while (0)
+#endif
+
 /* ---------------- Ход загрузки на экране ----------------
  * Показывается вместо текстового журнала: тот уходит в провод и в
  * сохраняемую область, а на экране видно, что система поднимается. */
