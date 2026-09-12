@@ -233,48 +233,83 @@ void usb_pos_ctrl_data(const uint8_t *data, int len) {
  * Последние две и делают круг отладки замкнутым: посмотреть журнал,
  * поправить, собрать, вернуть телефон в загрузчик и загрузить снова —
  * теперь всё это делается с компьютера, без рук у стола. */
-void usb_pos_received(const uint8_t *data, int len) {
-    for (int i = 0; i < len; i++) {
-        switch (data[i]) {
-        case 'p':
-            usb_log_write("POS: ping\n");
-            break;
+/* ОПАСНЫЕ КОМАНДЫ — ТОЛЬКО ПО ОТЛИЧИТЕЛЬНОЙ ПОСЛЕДОВАТЕЛЬНОСТИ.
+ *
+ * Сперва перезагрузка вызывалась одним байтом 'b'. Это оказалось прямой
+ * причиной того, что аппарат выключался сам через случайное время: в
+ * потоке по проводу достаточно одного такого байта, а он там берётся из
+ * чего угодно — из недосчитанной длины приёма, из неочищенного буфера,
+ * из чужого обращения к устройству.
+ *
+ * Подпись в микросхеме питания это и подтвердила: выключение по
+ * PS_HOLD, то есть процессор отпустил линию сам. Отпускает её ровно наш
+ * код перезагрузки — значит его и вызывали, просто не мы.
+ *
+ * Теперь перед буквой требуется "POS": четыре байта подряд случайно не
+ * складываются. Безобидные команды (журнал, отзыв) остаются
+ * односимвольными — ошибиться в них нечем. */
+static const char g_magic[] = "POS";
+static int g_magic_pos = 0;
 
-        case 'v':
-            usb_log_write("POS: proshivkaOS NEXT, mido, skorost ");
-            usb_log_write(g_speed >= 480 ? "vysokaya\n" : "polnaya\n");
-            break;
+static void do_command(uint8_t c) {
+    switch (c) {
+    case 'p':
+        usb_log_write("POS: ping\n");
+        break;
 
-        case 'd':
-            if (ramoops_snapshot(&g_replay, &g_replay_len)) {
-                g_replay_pos = 0;
-                /* Кольцо выбрасываем: всё, что в нём есть, уже входит в
-                   повтор. Иначе хвост прошлой выдачи вклинивается в
-                   начало журнала, и порядок строк перестаёт что-либо
-                   значить — а читают журнал именно по порядку. */
-                g_tail = g_head;
-            } else {
-                usb_log_write("POS: zhurnal nedostupen\n");
-            }
-            break;
+    case 'v':
+        usb_log_write("POS: proshivkaOS NEXT, mido, skorost ");
+        usb_log_write(g_speed >= 480 ? "vysokaya\n" : "polnaya\n");
+        break;
 
-#ifdef BOARD_IMEM_RESTART_REASON
-        case 'b':
-            usb_log_write("POS: uhozhu v zagruzchik\n");
-            msm_reboot_bootloader();
-            break;
-
-        case 's':
-            usb_log_write("POS: perezagruzhayus v sistemu\n");
-            msm_reboot_system();
-            break;
-#endif
-
-        default:
-            break;
+    case 'd':
+        if (ramoops_snapshot(&g_replay, &g_replay_len)) {
+            g_replay_pos = 0;
+            /* Кольцо выбрасываем: всё, что в нём есть, уже входит в
+               повтор. Иначе хвост прошлой выдачи вклинивается в начало
+               журнала, и порядок строк перестаёт что-либо значить. */
+            g_tail = g_head;
+        } else {
+            usb_log_write("POS: zhurnal nedostupen\n");
         }
+        break;
+
+    default:
+        break;
     }
 }
+
+void usb_pos_received(const uint8_t *data, int len) {
+    for (int i = 0; i < len; i++) {
+        uint8_t c = data[i];
+
+        /* Набирается ли отличительная последовательность. */
+        if (g_magic_pos < (int)sizeof(g_magic) - 1) {
+            if (c == (uint8_t)g_magic[g_magic_pos]) { g_magic_pos++; continue; }
+            g_magic_pos = (c == (uint8_t)g_magic[0]) ? 1 : 0;
+            do_command(c);
+            continue;
+        }
+
+        /* Последовательность набрана — эта буква может быть опасной. */
+        g_magic_pos = 0;
+
+#ifdef BOARD_IMEM_RESTART_REASON
+        if (c == 'b') {
+            usb_log_write("POS: uhozhu v zagruzchik\n");
+            msm_reboot_bootloader();
+            continue;
+        }
+        if (c == 's') {
+            usb_log_write("POS: perezagruzhayus v sistemu\n");
+            msm_reboot_system();
+            continue;
+        }
+#endif
+        do_command(c);
+    }
+}
+
 
 static int zero_reply(const uint8_t **data, int *len) {
     static const uint8_t zeros[2] = { 0, 0 };

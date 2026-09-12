@@ -202,3 +202,81 @@ int pmic_ldo_enable(int n) {
     early_con_puts((en & ENABLE_BIT) ? " vklyuchen\n" : " ne vklyuchilsya\n");
     return (en & ENABLE_BIT) ? 1 : 0;
 }
+
+/* ======== ПОЧЕМУ УМЕР ПРОШЛЫЙ ЗАПУСК ========
+ *
+ * Микросхема питания это записывает. У её узла управления питанием есть
+ * несколько регистров-причин, и они переживают перезагрузку:
+ *
+ *   PON_REASON1        почему включились
+ *   WARM_RESET_REASON  почему был тёплый сброс
+ *   POFF_REASON        почему выключились
+ *
+ * Это ровно тот вопрос, на который я третий заход отвечаю догадками:
+ * сторожевой таймер? сопроцессор питания? отрисовка? Догадки стоили
+ * дорого и все оказались неверны. Здесь ответ записан железом.
+ *
+ * Разряды названы так же, как в драйвере Android (qpnp-power-on.c) —
+ * оттуда и взяты, вместе со смещениями. */
+#define PON_BASE_ADDR           0x0800
+#define PON_REASON1             (PON_BASE_ADDR + 0x08)
+#define PON_WARM_RESET_REASON1  (PON_BASE_ADDR + 0x0A)
+#define PON_WARM_RESET_REASON2  (PON_BASE_ADDR + 0x0B)
+#define PON_POFF_REASON1        (PON_BASE_ADDR + 0x0C)
+#define PON_POFF_REASON2        (PON_BASE_ADDR + 0x0D)
+
+static void say_bits(uint8_t v, const char *const *names, int count) {
+    if (!v) { early_con_puts(" net"); return; }
+    for (int i = 0; i < count; i++)
+        if ((v >> i) & 1) { early_con_puts(" "); early_con_puts(names[i]); }
+}
+
+static const char *const g_pon_reason[8] = {
+    "ZHYOSTKIY-SBROS", "SMPL-propalo-pitanie", "RTC-budilnik",
+    "DC-zaryadka", "USB-zaryadka", "vtoraya-mikroshema",
+    "vneshnee-pitanie", "knopka-pitaniya"
+};
+
+static const char *const g_off_reason[16] = {
+    "SOFT-programmno", "PS_HOLD-procesor-otpustil", "STOROZH-MIKROSHEMY",
+    "GP1", "GP2", "pitanie+sbros", "knopka-gromkosti-vniz",
+    "dolgoe-uderzhanie-pitaniya", "-", "-", "-",
+    "zaryadka", "TFT-teplovaya-zashchita", "UVLO-prosadka-pitaniya",
+    "OTST3-peregrev", "STAGE3"
+};
+
+void pmic_report_reset_reasons(void) {
+    static const uint8_t sids[2] = { 0, 2 };
+
+    for (int k = 0; k < 2; k++) {
+        uint8_t sid = sids[k];
+        uint8_t pon = 0, w1 = 0, w2 = 0, p1 = 0, p2 = 0;
+
+        if (!spmi_read(sid, PON_REASON1, &pon)) continue;
+        spmi_read(sid, PON_WARM_RESET_REASON1, &w1);
+        spmi_read(sid, PON_WARM_RESET_REASON2, &w2);
+        spmi_read(sid, PON_POFF_REASON1, &p1);
+        spmi_read(sid, PON_POFF_REASON2, &p2);
+
+        early_con_puts("PON: mikroshema ");
+        early_con_hex8(sid);
+        early_con_puts(" vklyuchenie ");
+        early_con_hex8(pon);
+        say_bits(pon, g_pon_reason, 8);
+        early_con_puts("\n");
+
+        early_con_puts("PON:  vyklyuchenie ");
+        early_con_hex8(p1);
+        early_con_hex8(p2);
+        say_bits(p1, g_off_reason, 8);
+        say_bits(p2, g_off_reason + 8, 8);
+        early_con_puts("\n");
+
+        early_con_puts("PON:  tyoplyy sbros ");
+        early_con_hex8(w1);
+        early_con_hex8(w2);
+        say_bits(w1, g_off_reason, 8);
+        say_bits(w2, g_off_reason + 8, 8);
+        early_con_puts("\n");
+    }
+}

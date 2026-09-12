@@ -563,6 +563,18 @@ static void ep0_setup(void) {
 
 static void bulk_arm_out(void) {
     if (g_out_armed) return;
+
+    /* ОЧИЩАЕМ БУФЕР ПЕРЕД ПРИЁМОМ.
+     *
+     * Иначе в нём остаётся то, что лежало раньше, — а слой устройства
+     * разбирает принятое как команды. Достаточно один раз ошибиться в
+     * подсчёте принятой длины, чтобы система приняла за команды
+     * килобайт мусора. Среди мусора рано или поздно попадётся байт,
+     * означающий перезагрузку. */
+    uint8_t *buf = (uint8_t *)dma_at(DMA_OUT);
+    for (int i = 0; i < BULK_MAX; i++) buf[i] = 0;
+    dsb_sy();
+
     if (start_xfer(PHYS_BULK_OUT, DMA_TRB_OUT, DMA_OUT, BULK_MAX, TRBCTL_NORMAL))
         g_out_armed = 1;
 }
@@ -674,9 +686,19 @@ static void on_ep_event(uint32_t ev) {
             g_in_busy = 0;
         } else if (ep == PHYS_BULK_OUT) {
             trb_t *t = (trb_t *)dma_at(DMA_TRB_OUT);
-            int got = BULK_MAX - (int)(t->size & 0xFFFFFF);
+            uint32_t left = t->size & 0xFFFFFF;
             g_out_armed = 0;
-            if (got > 0) usb_pos_received((const uint8_t *)dma_at(DMA_OUT), got);
+
+            /* Принятое считается как "сколько просили минус сколько
+               осталось". Если осталось больше, чем просили, — значит
+               описатель не тот, за который мы его принимаем, и верить
+               подсчёту нельзя. Пропускаем: чужие байты здесь
+               разбираются как команды. */
+            if (left <= (uint32_t)BULK_MAX) {
+                int got = BULK_MAX - (int)left;
+                if (got > 0)
+                    usb_pos_received((const uint8_t *)dma_at(DMA_OUT), got);
+            }
             bulk_arm_out();
         }
         break;
