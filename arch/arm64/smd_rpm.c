@@ -396,32 +396,47 @@ static int smd_send(const uint32_t *body, uint32_t n_words) {
 void smd_rpm_poll(void) {
     if (!g_ready) return;
 
+    /* Признак смены состояния снимаем всегда: пока он поднят,
+       сопроцессор считает, что мы его не услышали. */
+    if (fld_get(1, FLD_fSTATE)) fld_set(1, FLD_fSTATE, 0);
+
     uint32_t mask = g_fifo_size - 1;
-    uint32_t head = fld_get(1, FLD_HEAD);
-    uint32_t tail = fld_get(1, FLD_TAIL);
-    uint32_t avail = (head - tail) & mask;
 
-    if (avail < SMD_PACKET_HDR) return;
+    if (!fld_get(1, FLD_fHEAD) &&
+        fld_get(1, FLD_HEAD) == fld_get(1, FLD_TAIL)) return;
 
-    /* Длина посылки — первое слово заголовка. */
-    uint32_t len = mmio_read32(g_rx_fifo + (tail & mask));
+    /* "Новые данные увидели" — ровно так это подтверждает драйвер ядра. */
+    fld_set(1, FLD_fHEAD, 0);
 
-    /* Здравый предел: испорченная длина увела бы хвост куда угодно, а
-       канал после этого не восстановить. */
-    if (len > g_fifo_size) {
-        fld_set(1, FLD_TAIL, head);
-        fld_set(1, FLD_fTAIL, 1);
-        smd_signal();
-        return;
+    /* Предел оборотов: испорченные указатели не должны становиться
+       вечным циклом посреди фоновой прокрутки. */
+    for (int guard = 0; guard < 16; guard++) {
+        uint32_t head = fld_get(1, FLD_HEAD);
+        uint32_t tail = fld_get(1, FLD_TAIL);
+        uint32_t avail = (head - tail) & mask;
+
+        if (avail < SMD_PACKET_HDR) break;
+
+        /* Длина посылки — первое слово заголовка. */
+        uint32_t len = mmio_read32(g_rx_fifo + (tail & mask));
+
+        if (len > g_fifo_size) {      /* явный мусор — очередь наотрез */
+            fld_set(1, FLD_TAIL, head);
+            break;
+        }
+
+        uint32_t total = SMD_PACKET_HDR + ((len + 3u) & ~3u);
+        if (avail < total) break;     /* посылка ещё не дописана */
+
+        fld_set(1, FLD_TAIL, (tail + total) & mask);
     }
 
-    uint32_t total = SMD_PACKET_HDR + ((len + 3u) & ~3u);
-    if (avail < total) return;          /* посылка ещё не дописана */
-
-    fld_set(1, FLD_TAIL, (tail + total) & mask);
+    /* "Хвост подвинули" и будим — иначе сопроцессор не узнает, что
+       место в очереди освободилось. */
     fld_set(1, FLD_fTAIL, 1);
     smd_signal();
 }
+
 
 /* Фоновая прокрутка: вызывается из каждого ожидания в системе. */
 void hal_rpm_pump(void) { smd_rpm_poll(); }
