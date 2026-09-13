@@ -46,6 +46,10 @@ static const char *tag_name(uint32_t tag) {
     case BB_TAG_RENDER:  return "otrisovka kadra";
     case BB_TAG_USB:     return "razbor sobytiy USB";
     case BB_TAG_RPM:     return "razgovor s soprocessorom pitaniya";
+    case BB_TAG_I2C_STATE: return "I2C: smena sostoyaniya bloka";
+    case BB_TAG_I2C_PUSH:  return "I2C: zapis v ochered peredachi";
+    case BB_TAG_I2C_XFER:  return "I2C: ozhidanie konca peredachi";
+    case BB_TAG_I2C_IDLE:  return "I2C: ozhidanie osvobozhdeniya shiny";
     default:             return "neizvestno";
     }
 }

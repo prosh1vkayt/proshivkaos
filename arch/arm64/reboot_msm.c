@@ -187,6 +187,77 @@ static int pon_configure_sid(uint8_t sid, uint8_t reset_type) {
 
 /* reason — что сказать загрузчику: BOARD_REBOOT_BOOTLOADER или 0 для
  * обычной загрузки. Возврата не бывает. */
+/* ======== КУДА ЗАГРУЗЧИК СМОТРИТ ПРИЧИНУ ПЕРЕЗАГРУЗКИ ========
+ *
+ * Не туда, куда я писал. Признак "проснись в загрузчике" я клал в
+ * служебную память кристалла по 0x0860065C — так делают старые
+ * загрузчики Qualcomm. Этот, собранный с USE_PON_REBOOT_REG, читает его
+ * из ЗАПАСНОГО РЕГИСТРА МИКРОСХЕМЫ ПИТАНИЯ:
+ *
+ *   hard_restart_reason = REG_READ(PON_SOFT_RB_SPARE);          // 0x88F
+ *   REG_WRITE(PON_SOFT_RB_SPARE, hard_restart_reason & 0x03);    // стирает
+ *   return (hard_restart_reason & 0xFC) >> 2;                    // 2 = fastboot
+ *
+ * Подсказкой было свойство qcom,store-hard-reset-reason в дереве
+ * устройств: это ядерная половина того же механизма. Сколько
+ * перезагрузок ушло в Android — ровно столько раз загрузчик читал пустой
+ * регистр.
+ *
+ * Пишем туда разряды 7:2 и не трогаем 1:0 — их загрузчик бережёт. В
+ * служебную память пишем по-прежнему: загрузчику другой сборки это не
+ * повредит, а этому не помешает. */
+#define PON_SOFT_RB_SPARE     0x88F
+#define PON_REASON_NORMAL     0x00
+#define PON_REASON_FASTBOOT   0x02
+
+static int pon_configure(uint8_t reset_type);
+
+static int pon_set_reboot_reason(uint8_t reason) {
+    uint8_t v = 0;
+    if (!spmi_read(0, PON_SOFT_RB_SPARE, &v)) return 0;
+    v = (uint8_t)((v & 0x03) | (uint8_t)(reason << 2));
+    return spmi_write(0, PON_SOFT_RB_SPARE, v);
+}
+
+/* ВЗВЕСТИ "ЗАГРУЗЧИК" ЗАРАНЕЕ, ПРИ СТАРТЕ.
+ *
+ * Тогда ЛЮБАЯ смерть системы — сторожевой таймер, сбой, перезагрузка по
+ * воле кристалла — приводит в fastboot, а не в Android. Это важнее, чем
+ * кажется:
+ *
+ *   - круг отладки больше не проходит через загрузку Android, то есть
+ *     через минуту ожидания и adb на каждом заходе;
+ *   - Android, загружаясь, размечает область сохранённых сообщений
+ *     заново и затирает наш чёрный ящик. Именно поэтому запись о
+ *     прошлом запуске ни разу не дожила до следующего.
+ *
+ * Загрузчик признак стирает, прочитав, — поэтому взводим каждый раз.
+ * Чтобы попасть в Android из-под нашей системы, есть posdev reboot
+ * system: он пишет обычную загрузку. Из самого fastboot — fastboot reboot. */
+void msm_arm_crash_to_bootloader(void) {
+    uint8_t before = 0, after = 0;
+    spmi_read(0, PON_SOFT_RB_SPARE, &before);
+    int ok = pon_set_reboot_reason(PON_REASON_FASTBOOT);
+    spmi_read(0, PON_SOFT_RB_SPARE, &after);
+
+    /* И СРАЗУ ЖЕ ТЁПЛЫЙ СБРОС.
+     *
+     * Одного признака мало — это показал опыт: при нашей команде
+     * перезагрузки аппарат приходил в загрузчик, а при укусе
+     * сторожевого таймера с тем же признаком — в Android. Разница в том,
+     * что команда сперва настраивает микросхему питания на тёплый сброс,
+     * а укус застаёт её в режиме, оставленном загрузчиком. Настраиваем
+     * заранее — и любая смерть идёт тем же путём, что и наша команда. */
+    pon_configure(PON_WARM_RESET);
+
+    early_con_puts(ok ? "REBOOT: pri sboe - v zagruzchik, registr "
+                      : "REBOOT: NE vzvedeno, registr ");
+    early_con_hex8(before);
+    early_con_puts(" -> ");
+    early_con_hex8(after);
+    early_con_puts("\n");
+}
+
 void msm_reboot(uint32_t reason) {
     early_con_puts("REBOOT: prichina ");
     early_con_hex32(reason);
@@ -201,6 +272,10 @@ void msm_reboot(uint32_t reason) {
 
     mmio_write32(BOARD_IMEM_RESTART_REASON, reason);
     dsb_sy();
+
+    /* Главное — регистр микросхемы питания: его и читает загрузчик. */
+    pon_set_reboot_reason(reason == BOARD_REBOOT_BOOTLOADER ? PON_REASON_FASTBOOT
+                                                            : PON_REASON_NORMAL);
 
     if (pon_configure(PON_WARM_RESET)) {
         /* Отпускаем линию удержания питания. Дальше всё делает

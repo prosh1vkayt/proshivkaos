@@ -138,6 +138,7 @@ void msm_reboot_bootloader(void);
 void msm_reboot_system(void);
 void msm_reboot(uint32_t reason);
 void msm_watchdog_arm(void);
+void msm_arm_crash_to_bootloader(void);
 void msm_watchdog_report(void);
 
 int  keys_gpio_init(void);
@@ -222,6 +223,12 @@ int  pmic_ldo_enable(int n);
 #define BB_TAG_RENDER  4
 #define BB_TAG_USB     5
 #define BB_TAG_RPM     6
+/* Фазы обмена по I2C — чёрный ящик показал, что смерть приходит внутри
+ * обмена с тачскрином, и надо знать, в какой именно его части. */
+#define BB_TAG_I2C_STATE  7
+#define BB_TAG_I2C_PUSH   8
+#define BB_TAG_I2C_XFER   9
+#define BB_TAG_I2C_IDLE   10
 
 #ifdef CONFIG_LOG_RAMOOPS
 void blackbox_init(void);

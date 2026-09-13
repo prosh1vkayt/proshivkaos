@@ -305,6 +305,17 @@ void usb_pos_received(const uint8_t *data, int len) {
             msm_reboot_system();
             continue;
         }
+        if (c == 'w') {
+            /* ОПЫТ: повиснуть намертво, не поглаживая сторожевой таймер.
+             *
+             * Нужен, чтобы увидеть, куда приводит смерть от его укуса —
+             * в загрузчик или в Android, — не дожидаясь случайной смерти
+             * по нескольку минут. Прерывания замаскированы, фоновая
+             * прокрутка не вызывается: ничто не погладит таймер. */
+            usb_log_write("POS: visnu bez storozha, zhdite ukusa\n");
+            __asm__ volatile ("msr daifset, #0xf");
+            for (;;) { }
+        }
 #endif
         do_command(c);
     }

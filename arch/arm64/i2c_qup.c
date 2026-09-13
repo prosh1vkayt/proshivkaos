@@ -37,6 +37,7 @@
  * устройства, которого нет на шине, обязан не вешать систему.
  */
 #include "arm64.h"
+#include "hal_time.h"
 
 /* ---- Регистры QUP ---- */
 #define QUP_CONFIG              0x000
@@ -118,6 +119,29 @@
 #define RX_TAG_LEN              2
 
 #define POLL_LIMIT              200000    /* оборотов ожидания на флаг */
+
+/* ОЖИДАНИЯ ОГРАНИЧЕНЫ ВРЕМЕНЕМ, А НЕ ЧИСЛОМ ОБОРОТОВ.
+ *
+ * Чёрный ящик показал, где умирает система: посреди обмена с
+ * тачскрином. А здесь каждое ожидание было "двести тысяч оборотов", и ни
+ * одно не гладило сторожевой таймер. Сколько это во времени, зависит от
+ * того, как быстро отвечает блок на шине, — а медленный блок растягивает
+ * одну неудачную передачу за двадцать секунд, и таймер кусает.
+ *
+ * Обмен с тачскрином при исправной шине занимает около миллисекунды.
+ * Двадцать пять — это с огромным запасом, и при этом в двадцать секунд
+ * до укуса такое не растянешь никак. Время спрашиваем не на каждом
+ * обороте, а раз в шестьдесят четыре: само чтение счётчика тоже стоит. */
+#define WAIT_MS                 25
+
+typedef struct { uint64_t deadline; int n; } wait_t;
+
+static void wait_begin(wait_t *w) { w->deadline = hal_time_ms() + WAIT_MS; w->n = 0; }
+
+static int wait_expired(wait_t *w) {
+    if ((++w->n & 63) != 0) return 0;
+    return hal_time_ms() >= w->deadline;
+}
 #define XFER_MAX                80        /* максимум байт в одну сторону */
 
 /* ---- Состояние драйвера ---- */
@@ -215,11 +239,13 @@ void i2c_qup_explain(uint32_t st) {
 /* ---- Смена состояния ---- */
 
 static int poll_state_mask(uint64_t base, uint32_t want, uint32_t mask) {
-    for (int i = 0; i < POLL_LIMIT; i++) {
+    wait_t w; wait_begin(&w);
+    blackbox_mark(BB_TAG_I2C_STATE);
+    for (;;) {
         uint32_t st = mmio_read32(base + QUP_STATE);
         if ((st & QUP_STATE_VALID) && (st & mask) == want) return 1;
+        if (wait_expired(&w)) return 0;
     }
-    return 0;
 }
 
 /* Перевести блок в состояние и УБЕДИТЬСЯ, что он туда встал.
@@ -290,6 +316,21 @@ int i2c_qup_init(uint64_t base, uint32_t core_hz, uint32_t bus_hz) {
     if (fs_div > 0xFF) fs_div = 0xFF;
     g_clk_ctl = ((3u & 0x7) << 8) | fs_div;
 
+    /* СКОЛЬКО СТОИТ ОДНО ОБРАЩЕНИЕ К БЛОКУ.
+     *
+     * Все ожидания в этом файле раньше мерились оборотами, и превращались
+     * они во время ровно через эту величину. Если чтение регистра стоит
+     * сотню микросекунд, двести тысяч оборотов — это двадцать секунд, то
+     * есть срок укуса сторожевого таймера. Лучше знать это цифрой. */
+    {
+        uint64_t t0 = hal_time_ms();
+        for (int i = 0; i < 20000; i++) (void)mmio_read32(base + QUP_STATE);
+        uint64_t t1 = hal_time_ms();
+        early_con_puts("I2C: 20000 chteniy bloka za ");
+        early_con_hex32((uint32_t)(t1 - t0));
+        early_con_puts(" ms\n");
+    }
+
     early_con_puts("I2C: delitel takta shiny ");
     early_con_hex32(g_clk_ctl);
     early_con_puts("\n");
@@ -308,16 +349,16 @@ static int push_out(uint64_t base, const uint8_t *tags, int tlen,
                     const uint8_t *data, int dlen) {
     uint32_t word = 0;
     int pos = 0;
+    wait_t w; wait_begin(&w);
+    blackbox_mark(BB_TAG_I2C_PUSH);
 
     for (int i = 0; i < tlen + dlen; i++) {
         uint8_t b = (i < tlen) ? tags[i] : data[i - tlen];
         word |= (uint32_t)b << (8 * pos);
 
         if (++pos == 4) {
-            for (int t = 0; ; t++) {
-                if (!(mmio_read32(base + QUP_OPERATIONAL) & QUP_OUT_FULL)) break;
-                if (t >= POLL_LIMIT) return 0;
-            }
+            while (mmio_read32(base + QUP_OPERATIONAL) & QUP_OUT_FULL)
+                if (wait_expired(&w)) return 0;
             mmio_write32(base + QUP_OUT_FIFO_BASE, word);
             word = 0;
             pos = 0;
@@ -325,10 +366,8 @@ static int push_out(uint64_t base, const uint8_t *tags, int tlen,
     }
 
     if (pos) {
-        for (int t = 0; ; t++) {
-            if (!(mmio_read32(base + QUP_OPERATIONAL) & QUP_OUT_FULL)) break;
-            if (t >= POLL_LIMIT) return 0;
-        }
+        while (mmio_read32(base + QUP_OPERATIONAL) & QUP_OUT_FULL)
+            if (wait_expired(&w)) return 0;
         mmio_write32(base + QUP_OUT_FIFO_BASE, word);
     }
 
@@ -343,8 +382,12 @@ static int push_out(uint64_t base, const uint8_t *tags, int tlen,
  * Возврат 1 — подтранзакция отработала. */
 static int wait_xfer(uint64_t base, uint8_t *rx, int total_rx) {
     int got = 0;
+    wait_t w; wait_begin(&w);
+    blackbox_mark(BB_TAG_I2C_XFER);
 
-    for (int i = 0; i < POLL_LIMIT; i++) {
+    for (;;) {
+        if (wait_expired(&w)) break;
+
         uint32_t op  = mmio_read32(base + QUP_OPERATIONAL);
         uint32_t bus = mmio_read32(base + QUP_I2C_STATUS) & I2C_STATUS_ERROR_MASK;
         uint32_t err = mmio_read32(base + QUP_ERROR_FLAGS) & QUP_STATUS_ERROR_FLAGS;
@@ -368,9 +411,9 @@ static int wait_xfer(uint64_t base, uint8_t *rx, int total_rx) {
         if (total_rx > 0) {
             while (got < total_rx &&
                    (mmio_read32(base + QUP_OPERATIONAL) & QUP_IN_NOT_EMPTY)) {
-                uint32_t w = mmio_read32(base + QUP_IN_FIFO_BASE);
+                uint32_t word = mmio_read32(base + QUP_IN_FIFO_BASE);
                 for (int b = 0; b < 4 && got < total_rx; b++, got++)
-                    rx[got] = (uint8_t)((w >> (8 * b)) & 0xFF);
+                    rx[got] = (uint8_t)((word >> (8 * b)) & 0xFF);
             }
             if (got >= total_rx) return 1;
         } else {
@@ -536,8 +579,10 @@ int i2c_qup_xfer(uint64_t base, uint8_t addr,
 
     /* Дождаться, пока шина освободится, и только потом сбрасывать. */
     if (ok) {
-        for (int i = 0; i < POLL_LIMIT; i++)
-            if (!(mmio_read32(base + QUP_I2C_STATUS) & I2C_STATUS_BUS_ACTIVE)) break;
+        wait_t w; wait_begin(&w);
+        blackbox_mark(BB_TAG_I2C_IDLE);
+        while (mmio_read32(base + QUP_I2C_STATUS) & I2C_STATUS_BUS_ACTIVE)
+            if (wait_expired(&w)) break;
     }
     g_last_status = mmio_read32(base + QUP_I2C_STATUS);
 

@@ -225,6 +225,11 @@ void hal_arch_init(void *boot_info) {
            записывает, и это единственный ответ, который не догадка. */
         pmic_report_reset_reasons();
         pmic_scan();
+#ifdef BOARD_IMEM_RESTART_REASON
+        /* Любая смерть с этого мгновения — в загрузчик, а не в Android.
+           Подробности в reboot_msm.c. */
+        msm_arm_crash_to_bootloader();
+#endif
     }
 
 #if defined(BOARD_WDOG_BASE) && !defined(CONFIG_WDOG_OFF)
