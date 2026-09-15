@@ -54,7 +54,7 @@ static void content_rect(const gconsole_t *gc, int *x, int *y, int *w, int *h) {
 int gconsole_cols(const gconsole_t *gc) {
     int cx, cy, cw, ch;
     content_rect(gc, &cx, &cy, &cw, &ch);
-    int cols = cw / (FONT_W * gc->scale);
+    int cols = cw / hal_gfx_cell_w(gc->scale);
     return cols < 1 ? 1 : cols;
 }
 
@@ -133,7 +133,7 @@ void gconsole_render(gconsole_t *gc) {
     content_rect(gc, &cx, &cy, &cw, &ch);
 
     int scale = (gc->scale < 1) ? 1 : gc->scale;
-    int cell_w = FONT_W * scale;
+    int cell_w = hal_gfx_cell_w(scale);
     int cell_h = FONT_H * scale;
 
     int cols = cw / cell_w;

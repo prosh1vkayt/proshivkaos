@@ -168,7 +168,7 @@ static void render_viewer(void) {
     }
 
     /* Перенос по ширине области, с учётом прокрутки по строкам. */
-    int cw = FONT_W * TM.scale_small;
+    int cw = hal_gfx_cell_w(TM.scale_small);
     int chx = FONT_H * TM.scale_small;
     int cols = (g_w - TM.pad * 4) / cw;
     if (cols < 1) return;

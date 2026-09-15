@@ -286,6 +286,49 @@ def main():
         print("otveta net vovse")
         return 1
 
+    if mode == "shot":
+        # Снимок экрана телефона: команда S, в ответ заголовок POSSHOT и
+        # пиксели RGB уменьшенного втрое кадра.
+        out_path = sys.argv[2] if len(sys.argv) > 2 else "shot.png"
+        dev = open_device(30.0)
+        if dev is None:
+            sys.stderr.write("posdev: устройство не появилось\n")
+            return 2
+        try:
+            while True:
+                dev.read(EP_IN, 4096, timeout=200)
+        except usb.core.USBError:
+            pass
+        dev.write(EP_OUT, b"S", timeout=1000)
+        buf = b""
+        t0 = time.time()
+        need = None
+        while time.time() - t0 < 60:
+            try:
+                buf += bytes(dev.read(EP_IN, 65536, timeout=500))
+            except usb.core.USBError:
+                if need is None and time.time() - t0 > 10:
+                    break
+            i = buf.find(b"POSSHOT")
+            if i >= 0 and len(buf) >= i + 11:
+                w = (buf[i + 7] << 8) | buf[i + 8]
+                h = (buf[i + 9] << 8) | buf[i + 10]
+                need = i + 11 + w * h * 3
+                if len(buf) >= need:
+                    break
+        usb.util.dispose_resources(dev)
+        if need is None or len(buf) < need:
+            sys.stderr.write("posdev: снимок не пришёл целиком (%d байт)\n" % len(buf))
+            return 1
+        try:
+            from PIL import Image
+        except ImportError:
+            sys.stderr.write("posdev: для PNG нужен Pillow (pip3 install pillow)\n")
+            return 3
+        Image.frombytes("RGB", (w, h), buf[i + 11:need]).save(out_path)
+        print("снимок %dx%d за %.1f с: %s" % (w, h, time.time() - t0, out_path))
+        return 0
+
     if mode == "bench":
         # Замер кадра: клавиша с кодом 1 запускает бенчмарк в оболочке,
         # итог приходит строками BENCH по проводу.

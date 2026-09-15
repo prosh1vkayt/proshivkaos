@@ -385,18 +385,39 @@ void hal_gfx_draw_string_transparent(int x, int y, const char *s, uint8_t fg) {
     }
 }
 
+/* ---- Крупный текст — сглаженный шрифт ----
+ *
+ * От масштаба 2 и выше текст рисуется Roboto из заранее растрированных
+ * масок (gui/font.c): на телефоне пиксельный шрифт 8x8, растянутый вчетверо,
+ * и был главной причиной «пиксельного» вида. Масштаб 1 — десктопная сборка
+ * на маленьком экране — остаётся прежним. */
+#include "font.h"
+
+static int aa_scale(int scale) {
+    if (scale < 2) return 0;
+    return scale >= FONT_SCALES ? FONT_SCALES - 1 : scale;
+}
+
+int hal_gfx_cell_w(int scale) {
+    if (scale < 1) scale = 1;
+    return aa_scale(scale) ? font_mono_advance(scale) : FONT_W * scale;
+}
+
 void hal_gfx_draw_char_scaled(int x, int y, char c, uint8_t fg, uint8_t bg, int scale) {
     if (scale < 1) scale = 1;
-    const uint8_t *glyph = font8x8_get_glyph(to_upper(c));
+    int s = aa_scale(scale);
+    if (s) {
+        int cw = font_mono_advance(scale);
+        gfxfb_fill_rect(x, y, cw, FONT_H * scale, bg);
+        if (c != ' ')
+            font_draw_cp_centered(&g_font_mono[s], x, y, scale, cw,
+                                  (uint32_t)(unsigned char)c, hal_gfx_palette_rgb(fg));
+        return;
+    }
 
+    const uint8_t *glyph = font8x8_get_glyph(to_upper(c));
     for (int row = 0; row < FONT_H; row++) {
         uint8_t bits = glyph[row];
-        /* Подряд идущие точки одного цвета — одним прямоугольником.
-           Раньше каждая из шестидесяти четырёх точек буквы была
-           отдельным вызовом; у типичной буквы в ряду две-три смены цвета,
-           так что вызовов становится втрое-вчетверо меньше. Квадратик
-           размером scale на scale вместо scale*scale отдельных точек был
-           первым шагом той же экономии. */
         int col = 0;
         while (col < FONT_W) {
             int on = (bits >> (7 - col)) & 1;
@@ -410,6 +431,7 @@ void hal_gfx_draw_char_scaled(int x, int y, char c, uint8_t fg, uint8_t bg, int 
 
 void hal_gfx_draw_string_scaled(int x, int y, const char *s, uint8_t fg, int scale) {
     if (scale < 1) scale = 1;
+    int as = aa_scale(scale);
 
     int cx = x;
     while (*s) {
@@ -417,6 +439,17 @@ void hal_gfx_draw_string_scaled(int x, int y, const char *s, uint8_t fg, int sca
             cx = x;
             y += FONT_H * scale;
             s++;
+            continue;
+        }
+        if (as) {
+            /* До конца строки одним вызовом: шаг пера дробный, и
+               склеивать ширины букв по одной значило бы копить ошибку. */
+            char line[256];
+            int n = 0;
+            while (s[n] && s[n] != '\n' && n < (int)sizeof(line) - 1) { line[n] = s[n]; n++; }
+            line[n] = 0;
+            cx += font_draw(&g_font_ui[as], cx, y, scale, line, hal_gfx_palette_rgb(fg));
+            s += n;
             continue;
         }
 
@@ -435,15 +468,27 @@ void hal_gfx_draw_string_scaled(int x, int y, const char *s, uint8_t fg, int sca
 
 int hal_gfx_string_width(const char *s, int scale) {
     if (scale < 1) scale = 1;
+    int as = aa_scale(scale);
 
-    int n = 0, best = 0;
+    int best = 0;
     while (*s) {
-        if (*s == '\n') { if (n > best) best = n; n = 0; }
-        else n++;
-        s++;
+        int n = 0;
+        while (s[n] && s[n] != '\n') n++;
+        int w;
+        if (as) {
+            char line[256];
+            int k = n < 255 ? n : 255;
+            for (int i = 0; i < k; i++) line[i] = s[i];
+            line[k] = 0;
+            w = font_width(&g_font_ui[as], line);
+        } else {
+            w = n * FONT_W * scale;
+        }
+        if (w > best) best = w;
+        s += n;
+        if (*s == '\n') s++;
     }
-    if (n > best) best = n;
-    return best * FONT_W * scale;
+    return best;
 }
 
 void hal_gfx_draw_string_centered(int x, int y, int w, const char *s, uint8_t fg, int scale) {

@@ -189,6 +189,10 @@ void hal_gfx_present(void);
 #define FONT_W 8
 #define FONT_H 8
 
+/* Ширина клетки текста при данном масштабе: на крупных масштабах это шаг
+ * моноширинного сглаженного шрифта, он уже восьми пикселей на масштаб. */
+int hal_gfx_cell_w(int scale);
+
 void hal_gfx_draw_char(int x, int y, char c, uint8_t fg, uint8_t bg);
 void hal_gfx_draw_string(int x, int y, const char *s, uint8_t fg, uint8_t bg);
 

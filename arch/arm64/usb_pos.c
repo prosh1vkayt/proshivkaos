@@ -343,6 +343,44 @@ static void do_command(uint8_t c) {
         break;
     }
 
+    case 'S': {
+        /* СНИМОК ЭКРАНА. То, что нарисовано в бэкбуфере, уменьшенное втрое
+           с усреднением по квадрату 3x3: 360x640 при полном разрешении
+           телефона, 700 КБ — провод отдаёт это за секунды. Заголовок:
+           "POSSHOT", ширина и высота по два байта. */
+        extern uint32_t *gfxfb_backbuffer32(void);
+        extern int gfxfb_width(void), gfxfb_height(void);
+        static uint8_t shot[7 + 4 + 360 * 640 * 3];
+        const uint32_t *fb = gfxfb_backbuffer32();
+        int W = gfxfb_width(), H = gfxfb_height();
+        int w = W / 3, h = H / 3;
+        if (w > 360) w = 360;
+        if (h > 640) h = 640;
+        const char *hdr = "POSSHOT";
+        for (int i = 0; i < 7; i++) shot[i] = (uint8_t)hdr[i];
+        shot[7] = (uint8_t)(w >> 8); shot[8] = (uint8_t)w;
+        shot[9] = (uint8_t)(h >> 8); shot[10] = (uint8_t)h;
+        uint8_t *d = shot + 11;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                unsigned r = 0, g = 0, b = 0;
+                for (int dy = 0; dy < 3; dy++) {
+                    const uint32_t *row = &fb[(y * 3 + dy) * W + x * 3];
+                    for (int dx = 0; dx < 3; dx++) {
+                        uint32_t v = row[dx];
+                        r += (v >> 16) & 255; g += (v >> 8) & 255; b += v & 255;
+                    }
+                }
+                *d++ = (uint8_t)(r / 9); *d++ = (uint8_t)(g / 9); *d++ = (uint8_t)(b / 9);
+            }
+        }
+        g_replay = (const volatile unsigned char *)shot;
+        g_replay_len = (uint32_t)(d - shot);
+        g_replay_pos = 0;
+        g_tail = g_head;
+        break;
+    }
+
 #ifdef BOARD_IMEM_RESTART_REASON
     case 'c': {
         /* Тактирование ядер — только чтение. ФАПЧ ядер (HF PLL), выбор
