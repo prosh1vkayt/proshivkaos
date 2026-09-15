@@ -290,6 +290,9 @@ else
   ifneq ($(call cfg,USB_DWC3),)
     ARCH_BASE_SOURCES += arch/arm64/usb_dwc3.c arch/arm64/usb_pos.c
   endif
+  ifneq ($(call cfg,SCM),)
+    ARCH_BASE_SOURCES += arch/arm64/scm.c
+  endif
 
   BOOT_ASM :=
   BOOT_S   := arch/arm64/boot.S arch/arm64/vectors.S

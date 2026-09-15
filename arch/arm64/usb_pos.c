@@ -337,6 +337,15 @@ static void do_command(uint8_t c) {
         break;
     }
 
+#ifdef CONFIG_SCM
+    case 'q': {
+        /* Спросить TrustZone про запуск процессора Wi-Fi. */
+        extern void scm_probe_wifi(void);
+        scm_probe_wifi();
+        break;
+    }
+#endif
+
 #ifdef BOARD_IMEM_RESTART_REASON
     case 'z': {
         /* ЖУРНАЛ TRUSTZONE. Доверенная среда пишет его в служебную память
