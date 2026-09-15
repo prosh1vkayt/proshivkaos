@@ -120,6 +120,50 @@ void tlmm_gpio_set(int gpio, int value) {
     dsb_sy();
 }
 
+/* ЗАЩЁЛКА ФРОНТА — без прерываний.
+ *
+ * У каждого вывода есть регистр настройки прерывания и регистр его
+ * состояния. Если разрешить только «сырое» состояние, а само прерывание
+ * не включать, блок запоминает спад на линии в разряде состояния, и
+ * никакой обработчик для этого не нужен. Короткий импульс, который опрос
+ * уровня проспал бы, так не теряется.
+ *
+ * Разряды — как в драйвере pinctrl-msm ядра для msm8953: разрешение 0,
+ * полярность 1, вид обнаружения 2..3 (2 — спад), сырое состояние 4,
+ * получатель 5..7 (4 — прикладной процессор). */
+#define TLMM_GPIO_INTR_CFG     0x08
+#define TLMM_GPIO_INTR_STATUS  0x0C
+#define INTR_POL_BIT           (1u << 1)
+#define INTR_DECT_FALLING      (2u << 2)
+#define INTR_RAW_STATUS_EN     (1u << 4)
+#define INTR_TARGET_KPSS       (4u << 5)
+
+void tlmm_gpio_latch_falling(int gpio) {
+    if (gpio < 0 || gpio >= TLMM_MAX_GPIO) return;
+    uint64_t t = gpio_tile(gpio);
+    mmio_write32(t + TLMM_GPIO_INTR_CFG,
+                 INTR_TARGET_KPSS | INTR_RAW_STATUS_EN | INTR_DECT_FALLING | INTR_POL_BIT);
+    mmio_write32(t + TLMM_GPIO_INTR_STATUS, 0);
+    dsb_sy();
+}
+
+void tlmm_gpio_latch_off(int gpio) {
+    if (gpio < 0 || gpio >= TLMM_MAX_GPIO) return;
+    uint64_t t = gpio_tile(gpio);
+    mmio_write32(t + TLMM_GPIO_INTR_CFG, 0);
+    mmio_write32(t + TLMM_GPIO_INTR_STATUS, 0);
+    dsb_sy();
+}
+
+/* Был ли спад с прошлого вызова. Защёлку сбрасывает. */
+int tlmm_gpio_latched(int gpio) {
+    if (gpio < 0 || gpio >= TLMM_MAX_GPIO) return 0;
+    uint64_t t = gpio_tile(gpio);
+    if (!(mmio_read32(t + TLMM_GPIO_INTR_STATUS) & 1u)) return 0;
+    mmio_write32(t + TLMM_GPIO_INTR_STATUS, 0);
+    return 1;
+}
+
 int tlmm_gpio_get(int gpio) {
     if (gpio < 0 || gpio >= TLMM_MAX_GPIO) return 0;
     return (mmio_read32(gpio_tile(gpio) + TLMM_GPIO_IN_OUT) & IN_OUT_IN) ? 1 : 0;

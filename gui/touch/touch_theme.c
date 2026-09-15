@@ -1,5 +1,6 @@
 /* gui/touch/touch_theme.c */
 #include "touch_theme.h"
+#include "hal.h"
 
 touch_metrics_t TM;
 
@@ -74,14 +75,17 @@ void touch_draw_app_icon(int x, int y, int size, const char *glyph,
     int r = size / 4;   /* заметно круглее карточек — так иконка читается
                            как иконка, а не как кусок интерфейса */
 
+    hal_debug_activity(HAL_ACT_ICON_SHADOW);
     if (!pressed)
         hal_gfx_drop_shadow(x, y, size, size, r, 3);
 
     /* Нажатая иконка слегка "вдавливается": градиент переворачивается. */
     uint8_t top = pressed ? dark  : color;
     uint8_t bot = pressed ? color : dark;
+    hal_debug_activity(HAL_ACT_ICON_BODY);
     hal_gfx_draw_glossy_button(x, y, size, size, top, bot, GFX_UI_DIVIDER, r);
 
+    hal_debug_activity(HAL_ACT_ICON_TEXT);
     if (glyph) {
         int gs = TM.scale + 1;
         int gy = y + (size - FONT_H * gs) / 2;

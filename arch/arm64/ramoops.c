@@ -197,6 +197,7 @@ void ramoops_putc(char c) {
     g_data[g_used++] = (uint8_t)c;
 
     hdr_write(8, g_used);
+    blackbox_note_console(g_used);
     flush((const void *)(g_data + g_used - 1), 1);
     flush((const void *)g_base, PRAM_HDR_BYTES);
 }

@@ -133,6 +133,18 @@ void hal_debug_boot_done(void);
 #define HAL_ACT_RENDER  4
 #define HAL_ACT_USB     5
 #define HAL_ACT_RPM     6
+/* Шаги внутри кадра — чтобы смерть при отрисовке указывала на шаг. */
+#define HAL_ACT_DRAW_BG     11
+#define HAL_ACT_DRAW_APP    12
+#define HAL_ACT_DRAW_OSK    13
+#define HAL_ACT_DRAW_BARS   14
+#define HAL_ACT_PRESENT     15
+#define HAL_ACT_DRAW_WALL   16
+#define HAL_ACT_DRAW_CLOCK  17
+#define HAL_ACT_DRAW_ICONS  18
+#define HAL_ACT_ICON_SHADOW 19
+#define HAL_ACT_ICON_BODY   20
+#define HAL_ACT_ICON_TEXT   21
 void hal_debug_activity(int what);
 
 /* Человекочитаемое имя платформы ("X86", "ARM64") — для neofetch и экрана

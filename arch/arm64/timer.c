@@ -44,6 +44,15 @@ static inline uint64_t read_cntpct(void) {
 }
 
 void hal_time_init(void) {
+    /* ТОЛЬКО ОДИН РАЗ. Её зовёт и подъём архитектуры (часы нужны
+       проводу и сопроцессору питания), и потом kmain. Второй вызов
+       обнулял отсчёт посреди загрузки: время шло назад, отметки чёрного
+       ящика путались, а всякое «не чаще раза в N мс» срабатывало не по
+       делу. */
+    static int done = 0;
+    if (done) return;
+    done = 1;
+
     uint64_t f;
     __asm__ volatile ("mrs %0, cntfrq_el0" : "=r"(f));
     if (f != 0) g_freq_hz = f;
@@ -110,10 +119,17 @@ void hal_time_delay_us(uint32_t us) {
 __attribute__((weak)) void hal_usb_pump(void) { }
 __attribute__((weak)) void hal_watchdog_pet(void) { }
 __attribute__((weak)) void boot_anim_tick(void) { }
+__attribute__((weak)) void hal_rpm_pump(void) { }
 
 void hal_background_poll(void) {
     hal_watchdog_pet();
     hal_usb_pump();
+    /* Ответы сопроцессора питания. Разбор был написан ещё в 02fe118 —
+       коммит так и называется: «перезагружал аппарат каждые полминуты,
+       потому что мы не читали его ответов», — но сам вызов отсюда
+       потерялся и не доехал ни до одного коммита. Ответы копились
+       непрочитанными с первой же просьбы. */
+    hal_rpm_pump();
     /* Пока идёт загрузка — двигаем полосу. Она рисует один небольшой
        прямоугольник, поэтому её можно звать из любого ожидания. */
     boot_anim_tick();

@@ -67,6 +67,16 @@ static const uint8_t g_wid_byte[FLD_COUNT] = { 4, 1, 1, 1, 1, 1, 1, 1, 1, 4, 4 }
 /* Ключи тела просьбы */
 #define RPM_KEY_SWEN        0x6E657773u     /* "swen" — включение       */
 #define RPM_KEY_UV          0x00007675u     /* "uv"   — напряжение, мкВ */
+#define RPM_KEY_ENAB        0x62616E45u     /* "Enab" — включить такт   */
+#define RPM_KEY_KHZ         0x007A484Bu     /* "KHz"  — частота, кГц    */
+#define RPM_KEY_MA          0x0000616Du     /* "ma"   — ожидаемый ток, мА */
+
+/* Виды ресурсов-тактов (как в драйвере clk-smd-rpm ядра) */
+#define RPM_RES_MISC_CLK    0x306B6C63u     /* "clk0": кварц и прочее   */
+#define RPM_RES_BUS_CLK     0x316B6C63u     /* "clk1": такты шин        */
+
+static int smd_send(const uint32_t *body, uint32_t n_words);
+static int g_quiet_send = 0;
 
 static uint64_t g_info = 0;
 static uint64_t g_tx_fifo = 0, g_rx_fifo = 0;
@@ -147,11 +157,21 @@ static int find_channel(const char *name, int edge) {
  *
  * Пауза миллисекундами — единственная, что прокручивает провод, поэтому
  * именно она и делает отметки видимыми на компьютере вовремя. */
+/* Отметки шагов с паузами служили отладке подъёма: отказ шины приходил
+ * асинхронно и всплывал внутри паузы, называя виноватый шаг. Канал давно
+ * поднимается, а паузы стоили трёх секунд каждой загрузки — девять шагов
+ * рукопожатия и шесть на каждую просьбу, по двести миллисекунд. Включаются
+ * обратно признаком CONFIG_DEBUG_SMD_STEPS. */
 static void step(const char *what) {
+#ifdef CONFIG_DEBUG_SMD_STEPS
+    if (g_quiet_send) return;
     early_con_puts("SMD shag ");
     early_con_puts(what);
     early_con_puts("\n");
     hal_time_delay_ms(200);
+#else
+    (void)what;
+#endif
 }
 
 static void report_states(void) {
@@ -187,6 +207,50 @@ static void set_local_state(uint32_t state) {
     smd_signal();
 }
 #endif
+
+/* Одна пара «ключ — значение» ресурсу. */
+static int rpm_request1(uint32_t res_type, uint32_t res_id, uint32_t key, uint32_t value) {
+    uint32_t msg[10];
+    uint32_t n = 0;
+    msg[n++] = RPM_SERVICE_REQUEST;
+    msg[n++] = 20u + 12u;
+    msg[n++] = g_msg_id++;
+    msg[n++] = RPM_STATE_ACTIVE;
+    msg[n++] = res_type;
+    msg[n++] = res_id;
+    msg[n++] = 12u;
+    msg[n++] = key;
+    msg[n++] = 4;
+    msg[n++] = value;
+    return smd_send(msg, n);
+}
+
+/* ГОЛОСА ЗА ТАКТЫ — ПЕРВЫМ ДЕЛОМ ПОСЛЕ ОТКРЫТИЯ КАНАЛА.
+ *
+ * Сопроцессор питания держит включённым только то, за что кто-то
+ * проголосовал. Загрузчик голосовал за такты шин и кварц, но канал мы
+ * при подъёме переоткрываем — и для сопроцессора это новый собеседник:
+ * прежние голоса снимаются.
+ *
+ * Без голосов он вправе остановить кварц или такт шины периферии
+ * (PCNOC), на которой сидят I2C тачскрина и последовательный порт.
+ * Linux поэтому голосует за них при старте, раньше всякой шины: кварц
+ * включён, PCNOC — 19,2 МГц «чтобы не уснула» (pnoc_keepalive). Делаем
+ * то же самое.
+ *
+ * Долгое время я считал, что именно отсутствие этих голосов и роняло
+ * аппарат. Опыты это опровергли — настоящую причину смотрите в mmu.c
+ * (запрет исполнения). Голоса остаются, потому что без них мы полагаемся
+ * на милость сопроцессора, а не потому, что они что-то чинили.
+ */
+static void rpm_keepalive_votes(void) {
+    g_quiet_send = 1;
+    int xo   = rpm_request1(RPM_RES_MISC_CLK, 0, RPM_KEY_ENAB, 1);
+    int pnoc = rpm_request1(RPM_RES_BUS_CLK,  0, RPM_KEY_KHZ, 19200);
+    g_quiet_send = 0;
+    early_con_puts(xo && pnoc ? "RPM: golosa za kvarc i shinu periferii otdany\n"
+                              : "RPM: golosa za takty NE USHLI\n");
+}
 
 int smd_rpm_init(void) {
     g_ready = 0;
@@ -304,6 +368,7 @@ int smd_rpm_init(void) {
 
     early_con_puts("SMD: kanal k soprocessoru pitaniya otkryt\n");
     g_ready = 1;
+    rpm_keepalive_votes();
     return 1;
 #endif
 }
@@ -454,6 +519,24 @@ void smd_rpm_poll(void) {
         uint32_t total = SMD_PACKET_HDR + ((len + 3u) & ~3u);
         if (avail < total) break;     /* посылка ещё не дописана */
 
+        /* Первые ответы — в журнал целиком. Сопроцессор отвечает на
+           каждую просьбу, и если ключ или вид ресурса назван неверно,
+           в ответе лежит строка ошибки. Без этого не узнать, приняты ли
+           голоса за такты: снаружи отказ неотличим от согласия. */
+        static int shown = 0;
+        if (shown < 6) {
+            shown++;
+            early_con_puts("RPM: otvet");
+            uint32_t words = len / 4u;
+            if (words > 12) words = 12;
+            for (uint32_t k = 0; k < words; k++) {
+                early_con_puts(" ");
+                early_con_hex32(mmio_read32(g_rx_fifo +
+                    ((tail + SMD_PACKET_HDR + 4u * k) & mask)));
+            }
+            early_con_puts("\n");
+        }
+
         fld_set(1, FLD_TAIL, (tail + total) & mask);
     }
 
@@ -478,10 +561,10 @@ void hal_rpm_pump(void) { smd_rpm_poll(); }
 int rpm_regulator_enable(uint32_t res_type, uint32_t res_id, uint32_t uv) {
     if (!g_ready) return 0;
 
-    uint32_t msg[13];
+    uint32_t msg[16];
     uint32_t n = 0;
 
-    uint32_t kvps = uv ? 2u : 1u;
+    uint32_t kvps = uv ? 3u : 2u;
     uint32_t body_bytes = kvps * 12u;
 
     msg[n++] = RPM_SERVICE_REQUEST;      /* какая служба                */
@@ -501,6 +584,18 @@ int rpm_regulator_enable(uint32_t res_type, uint32_t res_id, uint32_t uv) {
     msg[n++] = RPM_KEY_SWEN;
     msg[n++] = 4;
     msg[n++] = 1;
+
+    /* ОЖИДАЕМЫЙ ТОК — ИНАЧЕ ИСТОЧНИК В РЕЖИМЕ МАЛОЙ НАГРУЗКИ.
+     *
+     * Без этого ключа сопроцессор считает, что потребителю хватит
+     * крошек, и держит источник в экономичном режиме (в журнале PMIC это
+     * «rezhim 80 -> 00»). У L10 в дереве устройств порог нормального
+     * режима — десять миллиампер, а тачскрин, запустив прошивку и начав
+     * сканировать, берёт больше. С ключом источник остаётся в нормальном
+     * режиме («rezhim 80») — проверено по журналу PMIC. */
+    msg[n++] = RPM_KEY_MA;
+    msg[n++] = 4;
+    msg[n++] = 100;
 
     early_con_puts("RPM: prosim vklyuchit ");
     early_con_hex32(res_type);

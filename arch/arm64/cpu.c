@@ -225,6 +225,7 @@ void hal_arch_init(void *boot_info) {
            записывает, и это единственный ответ, который не догадка. */
         pmic_report_reset_reasons();
         pmic_scan();
+        pmic_report_apc();
 #ifdef BOARD_IMEM_RESTART_REASON
         /* Любая смерть с этого мгновения — в загрузчик, а не в Android.
            Подробности в reboot_msm.c. */
@@ -266,9 +267,22 @@ void hal_arch_init(void *boot_info) {
      * Ждём не просто подъёма контроллера, а того, что хост на другом
      * конце ДОГОВОРИЛСЯ с нами до конца: контроллер лишь подтягивает
      * линию, а на вопросы отвечает система, крутя очередь событий. */
+    /* НЕ ЖДАТЬ КОМПЬЮТЕРА, КОТОРОГО НЕТ.
+     *
+     * Ожидание было три секунды на попытку, две попытки — шесть секунд
+     * загрузки у телефона, который просто лежит без провода. Теперь сперва
+     * ждём, сбросит ли хост шину: подключённый компьютер делает это за
+     * доли секунды после того, как мы подтянули линию. Нет сброса — нет
+     * хоста, идём дальше; очередь событий крутится в фоне, и провод,
+     * воткнутый позже, всё равно договорится. Долгое ожидание — только
+     * когда хост есть и перечисление идёт. */
     for (int attempt = 0; attempt < 2; attempt++) {
         if (attempt) early_con_puts("USB: podnimaem zanovo\n");
-        usb_dwc3_init();
+        if (!usb_dwc3_init()) continue;
+
+        for (int i = 0; i < 700 && !usb_dwc3_host_seen(); i++)
+            hal_time_delay_ms(1);
+        if (!usb_dwc3_host_seen()) break;
 
         for (int i = 0; i < 3000 && !usb_dwc3_ready(); i++)
             hal_time_delay_ms(1);
@@ -352,6 +366,9 @@ static const char *vector_name(uint64_t index) {
 /* Вызывается из arch/arm64/vectors.S. Возврата нет — уходим в панику,
  * предварительно выплюнув в UART всё, что известно о сбое: без этого
  * отладка на голом железе превращается в гадание. */
+/* Настоящая — в usb_pos.c; в сборках без провода сбрасывать нечего. */
+__attribute__((weak)) void usb_pos_after_fault(void) { }
+
 void arm64_exception_handler(uint64_t index, uint64_t esr, uint64_t far, uint64_t elr) {
     /* Защита от повторного входа.
      *
@@ -367,6 +384,12 @@ void arm64_exception_handler(uint64_t index, uint64_t esr, uint64_t far, uint64_
         for (;;) __asm__ volatile ("wfi");
     }
     g_in_handler = 1;
+
+    /* В чёрный ящик — раньше всего остального: печать может не дойти
+       ни до провода, ни до человека, а эта запись дойдёт до следующей
+       загрузки. */
+    blackbox_fault(index, esr, far, elr);
+    usb_pos_after_fault();
 
     /* ПЕРВЫМ ДЕЛОМ — на экран, до любого вывода в порт.
      *

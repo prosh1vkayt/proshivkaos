@@ -26,6 +26,7 @@
  */
 #include "arm64.h"
 #include "boards/board.h"
+#include "hal_time.h"
 
 #define VENDOR_ID       0x1209
 #define PRODUCT_ID      0x0001
@@ -166,6 +167,12 @@ static char     g_ring[LOG_RING];
 static uint32_t g_head = 0, g_tail = 0;
 static int      g_in_pull = 0;
 
+/* Сбой мог случиться посреди выдачи — тогда признак выдачи так и остался
+   поднятым, и всё, что обработчик сбоя напечатает, молча пропало бы. */
+void usb_pos_after_fault(void) {
+    g_in_pull = 0;
+}
+
 void usb_log_write(const char *s) {
     if (g_in_pull) return;          /* не наматывать собственные жалобы */
     while (*s) {
@@ -251,16 +258,105 @@ void usb_pos_ctrl_data(const uint8_t *data, int len) {
 static const char g_magic[] = "POS";
 static int g_magic_pos = 0;
 
+/* Команды с данными: после буквы идут ещё несколько байт.
+ *
+ *   POSk <знак>             нажать клавишу
+ *   POSt <x:2> <y:2>        коснуться точки (старший байт первым)
+ *
+ * Обе — для нагрузочной проверки: компьютер набирает быстрее человека. */
+static uint8_t g_arg_cmd = 0;
+static uint8_t g_arg[4];
+static int     g_arg_have = 0, g_arg_need = 0;
+
+/* Ввод живёт в hal_input_arm64.c; в сборке без него — заглушки. */
+__attribute__((weak)) void hal_input_inject_key(int key) { (void)key; }
+__attribute__((weak)) void hal_input_inject_tap(int x, int y) { (void)x; (void)y; }
+
+static void do_arg_command(void) {
+    if (g_arg_cmd == 'k')
+        hal_input_inject_key(g_arg[0]);
+    else if (g_arg_cmd == 't')
+        hal_input_inject_tap((g_arg[0] << 8) | g_arg[1], (g_arg[2] << 8) | g_arg[3]);
+}
+
 static void do_command(uint8_t c) {
     switch (c) {
-    case 'p':
-        usb_log_write("POS: ping\n");
+    case 'p': {
+        /* С временем работы: по нему компьютер сопоставляет свои часы с
+           часами телефона, и момент смерти, замеченный снаружи, можно
+           положить рядом со следом чёрного ящика. */
+        static const char hexd[] = "0123456789ABCDEF";
+        char line[48] = "POS: ping ";
+        uint32_t ms = (uint32_t)hal_time_ms();
+        int n = 10;
+        for (int sh = 28; sh >= 0; sh -= 4) line[n++] = hexd[(ms >> sh) & 0xF];
+#ifdef BOARD_IMEM_RESTART_REASON
+        /* Самый горячий датчик кристалла, десятые доли градуса (TSENS,
+           второе поколение: регистр состояния датчика, младшие 12 разрядов
+           — знаковая температура, разряд 21 — значение годное). */
+        {
+            int best = -10000;
+            for (int sn = 0; sn < 16; sn++) {
+                uint32_t st = mmio_read32(0x004A9000UL + 0xA0 + 4u * (uint32_t)sn);
+                if (!(st & (1u << 21))) continue;
+                int t = (int)(st & 0xFFF);
+                if (t & 0x800) t -= 0x1000;
+                if (t > best) best = t;
+            }
+            line[n++] = ' ';
+            line[n++] = 't';
+            uint32_t v = (uint32_t)(best < 0 ? 0 : best);
+            for (int sh = 12; sh >= 0; sh -= 4) line[n++] = hexd[(v >> sh) & 0xF];
+        }
+#endif
+        line[n++] = '\n';
+        line[n] = 0;
+        usb_log_write(line);
         break;
+    }
 
     case 'v':
         usb_log_write("POS: proshivkaOS NEXT, mido, skorost ");
         usb_log_write(g_speed >= 480 ? "vysokaya\n" : "polnaya\n");
         break;
+
+    case 'o': {
+        /* Хвост журнала ПРОШЛОГО запуска — того, что умер. */
+        const char *tail; uint32_t n;
+        if (blackbox_prev_tail(&tail, &n)) {
+            usb_log_write("POS: hvost proshlogo zapuska:\n");
+            /* Только самый конец: провод отдаёт медленно, а следующая
+               смерть может прийти раньше, чем дойдёт всё. */
+            if (n > 1200) { tail += n - 1200; n = 1200; }
+            g_replay = (const volatile unsigned char *)tail;
+            g_replay_len = n;
+            g_replay_pos = 0;
+        } else {
+            usb_log_write("POS: hvosta proshlogo zapuska net\n");
+        }
+        break;
+    }
+
+#ifdef BOARD_IMEM_RESTART_REASON
+    case 'z': {
+        /* ЖУРНАЛ TRUSTZONE. Доверенная среда пишет его в служебную память
+           на кристалле (узел qcom,tz-log в дереве: 0x08600720, 8 КБ), и
+           обычному миру его читать разрешено — так делает и Linux. Если
+           аппарат перезагружает она, причина должна лежать здесь. Слово
+           за словом в свой буфер, потом отдаём как повтор. */
+        static uint8_t tz[0x2000];
+        for (uint32_t off = 0; off < sizeof(tz); off += 4) {
+            uint32_t w = mmio_read32(0x08600720UL + off);
+            tz[off] = (uint8_t)w; tz[off + 1] = (uint8_t)(w >> 8);
+            tz[off + 2] = (uint8_t)(w >> 16); tz[off + 3] = (uint8_t)(w >> 24);
+        }
+        g_replay = (const volatile unsigned char *)tz;
+        g_replay_len = sizeof(tz);
+        g_replay_pos = 0;
+        g_tail = g_head;
+        break;
+    }
+#endif
 
     case 'd':
         if (ramoops_snapshot(&g_replay, &g_replay_len)) {
@@ -283,6 +379,16 @@ void usb_pos_received(const uint8_t *data, int len) {
     for (int i = 0; i < len; i++) {
         uint8_t c = data[i];
 
+        /* Идут данные команды — это не буквы, разбирать их нельзя. */
+        if (g_arg_need) {
+            g_arg[g_arg_have++] = c;
+            if (g_arg_have == g_arg_need) {
+                do_arg_command();
+                g_arg_need = 0;
+            }
+            continue;
+        }
+
         /* Набирается ли отличительная последовательность. */
         if (g_magic_pos < (int)sizeof(g_magic) - 1) {
             if (c == (uint8_t)g_magic[g_magic_pos]) { g_magic_pos++; continue; }
@@ -293,6 +399,13 @@ void usb_pos_received(const uint8_t *data, int len) {
 
         /* Последовательность набрана — эта буква может быть опасной. */
         g_magic_pos = 0;
+
+        if (c == 'k' || c == 't') {
+            g_arg_cmd = c;
+            g_arg_have = 0;
+            g_arg_need = (c == 'k') ? 1 : 4;
+            continue;
+        }
 
 #ifdef BOARD_IMEM_RESTART_REASON
         if (c == 'b') {

@@ -325,6 +325,23 @@ static void pump_hardware(void) {
     }
 }
 
+/* ВВОД С КОМПЬЮТЕРА — для нагрузочной проверки (posdev stress).
+ *
+ * Руками быстрее десятка нажатий в секунду не набрать, а падение при
+ * быстром наборе надо ловить без человека у стола. Эти события идут в ту
+ * же очередь, что и от тачскрина, и дальше их путь ничем не отличается:
+ * оболочка, клавиатура, терминал, отрисовка. */
+void hal_input_inject_key(int key) {
+    push(HAL_EV_KEY, g_x, g_y, g_pressed, key);
+}
+
+void hal_input_inject_tap(int x, int y) {
+    x = clamp(x, 0, g_screen_w - 1);
+    y = clamp(y, 0, g_screen_h - 1);
+    push(HAL_EV_POINTER_DOWN, x, y, 1, 0);
+    push(HAL_EV_POINTER_UP,   x, y, 0, 0);
+}
+
 int hal_input_poll(hal_input_event_t *ev) {
     /* Заодно прокручиваем провод.
      *

@@ -17,6 +17,8 @@
     listen <сек> [файл]   слушать до Ctrl-C
     dump   <сек> [файл]   забрать журнал и выйти самому
     cmd    <буква>        отдать команду и выйти
+    stress <сек> [в сек]  нагрузка: быстрый набор и касания клавиатуры,
+                          с проверкой, что телефон отвечает
 
 Режим dump выходит сам, когда провод замолчал, — на этом и держится
 круг отладки без человека у стола.
@@ -130,6 +132,97 @@ def stream(dev, out, stop_when_quiet):
             out.write(text)
 
 
+# Экран mido. Касания бьют по буквенным рядам клавиатуры — туда, куда
+# целится палец при наборе; нижний ряд с кнопкой «убрать клавиатуру» и
+# панель навигации не трогаем, иначе проверка уйдёт с терминала.
+SCREEN_W, SCREEN_H = 1080, 1920
+
+
+def stress(seconds, rate, open_terminal=True):
+    """Набирать быстрее человека и следить, что телефон жив.
+
+    Раз в секунду — отзыв 'p'. Два пропуска подряд — телефон считается
+    упавшим: провод не отвечает, а значит не отвечает и система."""
+    import random
+    dev = open_device(30.0)
+    if dev is None:
+        sys.stderr.write("posdev: устройство не появилось\n")
+        return 2
+    describe(dev)
+
+    # С рабочего стола Esc открывает терминал — туда и идёт набор. После
+    # загрузки на экране именно рабочий стол; если уже открыт терминал,
+    # Esc вернёт на стол, и касания по клавиатуре откроют его снова не
+    # сразу — поэтому тест лучше запускать на свежей загрузке.
+    if open_terminal:
+        dev.write(EP_OUT, b"POSk\x1b", timeout=1000)
+        time.sleep(0.5)
+
+    words = ["ls", "help", "pwd", "uptime", "date", "abcdefghij",
+             "the quick brown fox", "0123456789"]
+    t0 = time.time()
+    sent_keys = sent_taps = 0
+    last_ping = 0.0
+    misses = 0
+    answered = 0
+    buf = b""
+
+    def pump():
+        nonlocal buf
+        try:
+            buf += bytes(dev.read(EP_IN, 4096, timeout=5))
+        except usb.core.USBError:
+            pass
+        if len(buf) > 65536:
+            buf = buf[-4096:]
+
+    try:
+        while time.time() - t0 < seconds:
+            now = time.time()
+            if now - last_ping >= 1.0:
+                if last_ping:
+                    if b"ping" in buf:
+                        answered += 1
+                        misses = 0
+                    else:
+                        misses += 1
+                        if misses >= 2:
+                            print("УПАЛ на %.1f с: два отзыва подряд без ответа "
+                                  "(клавиш %d, касаний %d)"
+                                  % (now - t0, sent_keys, sent_taps))
+                            return 1
+                buf = b""
+                dev.write(EP_OUT, b"p", timeout=1000)
+                last_ping = now
+
+            if random.random() < 0.7:
+                w = random.choice(words)
+                for ch in w + ("\n" if random.random() < 0.5 else " "):
+                    dev.write(EP_OUT, b"POSk" + ch.encode(), timeout=1000)
+                    sent_keys += 1
+                    pump()
+                    time.sleep(1.0 / rate)
+            else:
+                x = random.randint(20, SCREEN_W - 20)
+                y = random.randint(int(SCREEN_H * 0.66), int(SCREEN_H * 0.84))
+                dev.write(EP_OUT, b"POSt" + bytes([x >> 8, x & 255, y >> 8, y & 255]),
+                          timeout=1000)
+                sent_taps += 1
+                pump()
+                time.sleep(1.0 / rate)
+            pump()
+    except usb.core.USBError as e:
+        print("УПАЛ на %.1f с: провод пропал (%s), клавиш %d, касаний %d"
+              % (time.time() - t0, e, sent_keys, sent_taps))
+        return 1
+    finally:
+        usb.util.dispose_resources(dev)
+
+    print("ЖИВ %.0f с под нагрузкой: клавиш %d, касаний %d, отзывов %d"
+          % (seconds, sent_keys, sent_taps, answered))
+    return 0
+
+
 def main():
     if len(sys.argv) < 2:
         sys.stderr.write(__doc__)
@@ -192,6 +285,10 @@ def main():
             return 0
         print("otveta net vovse")
         return 1
+
+    if mode == "stress":
+        return stress(float(sys.argv[2]) if len(sys.argv) > 2 else 60.0,
+                      float(sys.argv[3]) if len(sys.argv) > 3 else 40.0)
 
     if mode == "cmd":
         ch = sys.argv[2] if len(sys.argv) > 2 else "p"

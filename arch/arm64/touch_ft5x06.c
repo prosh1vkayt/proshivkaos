@@ -106,6 +106,9 @@ static int g_x = 0, g_y = 0, g_pressed = 0;
  * состоянии, а на некоторых экземплярах — в режиме пониженного потребления,
  * из которого она не отвечает на I2C вовсе. Задержки взяты из дерева
  * устройств (focaltech,hard-reset-delay-ms = 200). */
+/* Работает ли защёлка фронта на этом железе — см. ft5x06_poll(). */
+static int g_latch_works = 0;
+
 static void ft5x06_reset(void) {
     tlmm_gpio_output(BOARD_TS_RESET_GPIO, 1);
     hal_time_delay_ms(5);
@@ -188,7 +191,15 @@ int ft5x06_init(void) {
           только линию сброса. Загрузчик оставляет контроллер в
           неопределённом состоянии, а иногда и в режиме пониженного
           потребления, из которого он на I2C не отвечает вовсе. */
+    /* Заодно проверяем защёлку фронта на выводе, которым управляем сами:
+       линию сброса мы сейчас опустим и поднимем. Без пальца на экране
+       линия прерывания молчит, и проверить защёлку на ней нечем. */
+    tlmm_gpio_latch_falling(BOARD_TS_RESET_GPIO);
     ft5x06_reset();
+    g_latch_works = tlmm_gpio_latched(BOARD_TS_RESET_GPIO);
+    tlmm_gpio_latch_off(BOARD_TS_RESET_GPIO);
+    early_con_puts(g_latch_works ? "TS: zashchyolka fronta rabotaet — shina tolko po signalu\n"
+                                 : "TS: zashchyolka fronta NE srabotala — oprashivaem po chasam\n");
 
     /* Читаем линию сброса обратно. Удерживаемый в сбросе контроллер
        молчит на шине точно так же, как обесточенный, и снаружи эти два
@@ -291,6 +302,9 @@ int ft5x06_init(void) {
     /* 9. Рабочий режим. */
     ts_write(FT_REG_MODE, 0x00);
 
+    /* 10. Защёлка на линии прерывания — см. ft5x06_poll(). */
+    tlmm_gpio_latch_falling(BOARD_TS_IRQ_GPIO);
+
     g_ready = 1;
     return 1;
 }
@@ -319,9 +333,30 @@ int ft5x06_ready(void) { return g_ready; }
  * заглянуть раз в тридцать миллисекунд стоит доли миллисекунды. */
 static uint64_t g_last_poll_ms = 0;
 
-#define TS_POLL_BUSY_MS  8      /* палец на экране: следим за движением */
-#define TS_POLL_IDLE_MS  30     /* покой: просто приглядываем           */
-#define TS_MOVE_EPSILON  6      /* мельче этого движение не сообщаем    */
+/* НА ШИНУ — ТОЛЬКО КОГДА ЕСТЬ ЧТО ЧИТАТЬ.
+ *
+ * Опрос по часам ходил на шину тридцать раз в секунду в покое и сто
+ * двадцать пять — под пальцем, и каждый обмен начинается со сброса
+ * блока I2C: за десять минут простоя семьдесят пять тысяч сбросов и
+ * миллионы обращений к регистрам ради того, чтобы узнать, что никто
+ * экрана не касался. Linux к шине тачскрина в покое не прикасается
+ * вовсе: читает по прерыванию.
+ *
+ * Теперь так же, только без прерываний: спад на линии защёлкивается в
+ * регистре вывода (см. tlmm_gpio_latched), и опрос этой защёлки ничего
+ * не стоит. Контроллер дёргает линию на каждый отчёт, включая
+ * отпускание пальца, — значит, пропасть оно больше не может и по часам
+ * догонять его незачем.
+ *
+ * По часам остаётся страховка, редкая. И если защёлка ни разу не
+ * сработала — вдруг на этом железе разряды другие, — работаем по-старому:
+ * тачскрин без защёлки лучше, чем мёртвый тачскрин. */
+#define TS_POLL_BUSY_MS     8     /* минимальный промежуток между обменами      */
+#define TS_POLL_IDLE_MS     30    /* по-старому: пока защёлка себя не показала  */
+#define TS_GUARD_PRESSED_MS 120   /* страховка под пальцем                     */
+#define TS_GUARD_IDLE_MS    2000  /* страховка в покое                         */
+#define TS_MOVE_EPSILON     6     /* мельче этого движение не сообщаем          */
+
 
 int ft5x06_poll(int *x, int *y, int *pressed) {
     if (!g_ready) return 0;
@@ -329,11 +364,20 @@ int ft5x06_poll(int *x, int *y, int *pressed) {
     uint64_t now = hal_time_ms();
     uint64_t since = now - g_last_poll_ms;
 
-    /* Линия прерывания активна низким уровнем. */
-    int have_data = (tlmm_gpio_get(BOARD_TS_IRQ_GPIO) == 0);
-
-    if (!have_data && !g_pressed && since < TS_POLL_IDLE_MS) return 0;
     if (since < TS_POLL_BUSY_MS) return 0;
+
+    int latched = g_latch_works ? tlmm_gpio_latched(BOARD_TS_IRQ_GPIO) : 0;
+    if (latched) g_latch_works = 1;
+
+    /* Линия прерывания активна низким уровнем. */
+    int have_data = latched || (tlmm_gpio_get(BOARD_TS_IRQ_GPIO) == 0);
+
+    if (!have_data) {
+        uint64_t guard = !g_latch_works ? TS_POLL_IDLE_MS :
+                         g_pressed      ? TS_GUARD_PRESSED_MS : TS_GUARD_IDLE_MS;
+        if (!g_latch_works && g_pressed) guard = TS_POLL_BUSY_MS;
+        if (since < guard) return 0;
+    }
     g_last_poll_ms = now;
 
     /* Заголовок и первая точка одним обменом: раздельные чтения дали бы

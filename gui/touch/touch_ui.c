@@ -75,6 +75,7 @@ static int g_touch_dots = 0;
                                    нажатие клавиши обычно меняется лишь
                                    оно, а панели и клавиатура остаются */
 
+
 static unsigned g_redraw = R_ALL;
 
 static void need_redraw(unsigned what) { g_redraw |= what; }
@@ -310,6 +311,7 @@ static void draw_home(void) {
     touch_theme_content_rect(&ax, &ay, &aw, &ah);
 
     /* Крупные часы — то, ради чего чаще всего и включают экран. */
+    hal_debug_activity(HAL_ACT_DRAW_CLOCK);
     int year, month, day, hour, min, sec;
     hal_time_rtc(&year, &month, &day, &hour, &min, &sec);
 
@@ -331,6 +333,7 @@ static void draw_home(void) {
     hal_gfx_draw_string_centered(0, ay + TM.touch + FONT_H * clock_scale + TM.pad,
                                   TM.screen_w, buf, GFX_UI_TEXT_DIM, TM.scale_small);
 
+    hal_debug_activity(HAL_ACT_DRAW_ICONS);
     for (int i = 0; i < APP_COUNT; i++) {
         int x, y, w, h;
         icon_rect(i, &x, &y, &w, &h);
@@ -407,9 +410,12 @@ static void render_frame(void) {
     if (g_screen == SCREEN_APP && g_current >= 0) {
         /* Приложение рисует свой фон само — обои под ним не нужны и
            только съедали бы время на заливку целого экрана. */
+        hal_debug_activity(HAL_ACT_DRAW_APP);
         render_app();
     } else {
+        hal_debug_activity(HAL_ACT_DRAW_BG);
         g_app_on_screen = -1;
+        hal_debug_activity(HAL_ACT_DRAW_WALL);
         if (g_wallpaper_mode == WALLPAPER_GRADIENT)
             touch_draw_wallpaper();
         else
@@ -419,7 +425,9 @@ static void render_frame(void) {
         else                            draw_home();
     }
 
+    hal_debug_activity(HAL_ACT_DRAW_OSK);
     osk_render();
+    hal_debug_activity(HAL_ACT_DRAW_BARS);
     draw_status_bar();
     draw_nav_bar();
 
@@ -444,6 +452,7 @@ static void render_frame(void) {
         gui_draw_cursor(cx, cy);
     }
 
+    hal_debug_activity(HAL_ACT_PRESENT);
     hal_gfx_present();
 }
 
@@ -722,6 +731,7 @@ void touch_main(void) {
        заливать экран заново перед этим незачем — вышла бы вспышка. */
     hal_debug_boot_done();
 
+
     render_frame();
 
     for (;;) {
@@ -774,6 +784,7 @@ void touch_main(void) {
             if (g_redraw & R_OSK)    osk_render();
             if (g_redraw & R_STATUS) draw_status_bar();
             if (g_redraw & R_NAV)    draw_nav_bar();
+            hal_debug_activity(HAL_ACT_PRESENT);
             hal_gfx_present();
         }
 

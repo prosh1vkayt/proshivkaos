@@ -98,6 +98,33 @@ void pmic_ldo_dump(int n) {
  * Печатаются все узлы подряд (адрес и вид), а отдельной строкой — те,
  * чей вид означает источник питания. Это и есть ответ на вопрос, где они
  * лежат и доступны ли нам вообще. */
+/* Питание ядер процессора: S5 на второй адресной ячейке PM8953 (узел
+ * spm-regulator@2000 в дереве). Им распоряжается не сопроцессор питания,
+ * а сам прикладной процессор через свой контроллер сна и CPR — то есть
+ * после загрузчика не распоряжается никто, и значение остаётся тем, что
+ * выставил загрузчик: у mido это 0,87 В в режиме AUTO.
+ *
+ * Проверено: ни принудительный PWM, ни 1,0 В на смерти не влияли —
+ * причина была в карте памяти (mmu.c). Докладываем всё равно: когда дойдёт
+ * до управления частотой, напряжение придётся ставить самим. */
+void pmic_report_apc(void) {
+    uint8_t sub = 0, range = 0, vset = 0, mode = 0, en = 0;
+    spmi_read(1, 0x2000 + REG_SUBTYPE, &sub);
+    spmi_read(1, 0x2000 + REG_VOLTAGE_RANGE, &range);
+    spmi_read(1, 0x2000 + REG_VOLTAGE_SET, &vset);
+    spmi_read(1, 0x2000 + 0x45, &mode);
+    spmi_read(1, 0x2000 + REG_ENABLE, &en);
+    early_con_puts("PMIC: S5 (yadra processora) podvid ");
+    early_con_hex8(sub);
+    early_con_puts(" diapazon "); early_con_hex8(range);
+    early_con_puts(" ustavka ");  early_con_hex8(vset);
+    early_con_puts(" rezhim ");   early_con_hex8(mode);
+    early_con_puts(" vkl ");      early_con_hex8(en);
+    early_con_puts(" hozyain ");
+    early_con_hex32((uint32_t)spmi_owner_of(1, 0x2000));
+    early_con_puts("\n");
+}
+
 void pmic_scan(void) {
     int total = spmi_channel_count();
     int shown = 0, regs = 0;

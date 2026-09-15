@@ -19,3 +19,4 @@ build/
 *.swp
 .vscode/
 .idea/
+__pycache__/

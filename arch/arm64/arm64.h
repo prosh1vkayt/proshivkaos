@@ -153,6 +153,9 @@ void tlmm_gpio_output(int gpio, int value);
 void tlmm_gpio_input(int gpio, int pull_up);
 void tlmm_gpio_set(int gpio, int value);
 int  tlmm_gpio_get(int gpio);
+void tlmm_gpio_latch_falling(int gpio);
+int  tlmm_gpio_latched(int gpio);
+void tlmm_gpio_latch_off(int gpio);
 
 /* ---------------- Ведущий I2C (Qualcomm QUP v2) ---------------- */
 int  i2c_qup_init(uint64_t base, uint32_t core_hz, uint32_t bus_hz);
@@ -202,6 +205,7 @@ int  spmi_owner_of(uint8_t sid, uint16_t addr);
 uint16_t pmic_ldo_base(int n);
 void pmic_ldo_dump(int n);
 void pmic_scan(void);
+void pmic_report_apc(void);
 /* Что записала микросхема питания о прошлом запуске: почему включились,
  * почему выключились, был ли тёплый сброс. Переживает перезагрузку. */
 void pmic_report_reset_reasons(void);
@@ -229,17 +233,28 @@ int  pmic_ldo_enable(int n);
 #define BB_TAG_I2C_PUSH   8
 #define BB_TAG_I2C_XFER   9
 #define BB_TAG_I2C_IDLE   10
+#define BB_TAG_DRAW_BG    11
+#define BB_TAG_DRAW_APP   12
+#define BB_TAG_DRAW_OSK   13
+#define BB_TAG_DRAW_BARS  14
+#define BB_TAG_PRESENT    15
 
 #ifdef CONFIG_LOG_RAMOOPS
 void blackbox_init(void);
 void blackbox_mark(uint32_t tag);
 void blackbox_heartbeat(void);
+void blackbox_fault(uint64_t index, uint64_t esr, uint64_t far, uint64_t elr);
+void blackbox_note_console(uint32_t used);
+int  blackbox_prev_tail(const char **data, uint32_t *len);
 #else
 /* Плата без памяти, переживающей перезагрузку: записывать некуда, а
  * вызывающим об этом знать незачем. */
 #define blackbox_init()        do { } while (0)
 #define blackbox_mark(t)       do { (void)(t); } while (0)
 #define blackbox_heartbeat()   do { } while (0)
+#define blackbox_fault(i, e, f, l) do { (void)(i); (void)(e); (void)(f); (void)(l); } while (0)
+#define blackbox_note_console(u)   do { (void)(u); } while (0)
+static inline int blackbox_prev_tail(const char **d, uint32_t *l) { (void)d; (void)l; return 0; }
 #endif
 
 /* ---------------- Ход загрузки на экране ----------------
@@ -284,6 +299,7 @@ int  rpm_regulator_enable(uint32_t res_type, uint32_t res_id, uint32_t uv);
 int  usb_dwc3_init(void);
 void usb_dwc3_poll(void);
 int  usb_dwc3_ready(void);
+int  usb_dwc3_host_seen(void);
 void usb_dwc3_set_configured(int on);
 
 /* Слой устройства: описания, стандартные запросы, кольцо журнала. */
@@ -298,6 +314,7 @@ int  usb_pos_pull(uint8_t *dst, int max);
 /* Положить строку в кольцо для отправки в компьютер. Слабая заглушка в
  * early_con.c делает вызов бесплатным там, где USB не собран. */
 void usb_log_write(const char *s);
+void usb_pos_after_fault(void);
 
 /* Тактирование USB и сбросы его блоков — в gcc_msm8953.c. */
 int  gcc_enable_usb30(void);

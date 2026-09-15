@@ -618,7 +618,10 @@ static void enable_bulk(void) {
 
 /* ---------------- События ---------------- */
 
+static int g_host_seen = 0;
+
 static void on_reset(void) {
+    g_host_seen = 1;
     note("shina sbroshena hostom");
     g_configured = 0;
     g_in_busy = 0;
@@ -745,6 +748,7 @@ static void handle_event(uint32_t ev) {
 /* ---------------- Внешний интерфейс ---------------- */
 
 int usb_dwc3_ready(void)      { return g_configured; }
+int usb_dwc3_host_seen(void)  { return g_host_seen; }
 void usb_dwc3_set_configured(int on) {
     if (on && !g_configured) { g_configured = 1; enable_bulk(); }
     else if (!on) g_configured = 0;

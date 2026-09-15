@@ -22,6 +22,8 @@
 #   posdev build           собрать образ
 #   posdev run             загрузить образ на телефон
 #   posdev ping [сколько]  замерить отклик телефона — работает ли всё
+#   posdev stress [сек]    нагрузка: набор и касания быстрее человека,
+#                          с проверкой, что телефон не упал
 #   posdev usb             слушать журнал по проводу (Ctrl-C — выход)
 #   posdev dump            забрать журнал по проводу и выйти самому
 #   posdev reboot [куда]   перезагрузить телефон: bootloader (по умолчанию)
@@ -184,6 +186,10 @@ cmd_ping() {
     python3 "$ROOT/tools/posdev-usb.py" ping "${1:-5}"
 }
 
+cmd_stress() {
+    python3 "$ROOT/tools/posdev-usb.py" stress "${1:-60}" "${2:-40}"
+}
+
 cmd_dump() {
     # То же самое, но выходит само, когда провод замолчал. На этом и
     # держится круг без человека у стола.
@@ -292,6 +298,7 @@ case "${1:-}" in
     usb)    shift; cmd_usb "${1:-60}" ;;
     dump)   shift; cmd_dump "${1:-40}" ;;
     ping)   shift; cmd_ping "${1:-5}" ;;
+    stress) shift; cmd_stress "${1:-60}" "${2:-40}" ;;
     reboot) shift; cmd_reboot "${1:-bootloader}" ;;
     log)    cmd_log ;;
     cycle)  cmd_cycle ;;
