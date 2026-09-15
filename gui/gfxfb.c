@@ -61,41 +61,98 @@ static int g_clip_x = 0, g_clip_y = 0, g_clip_w = 0, g_clip_h = 0;
  * "медленным вообще"; а стоило начать печатать на экранной клавиатуре —
  * и каждое подсвечивание клавиши обходилось в целый кадр.
  *
- * Теперь помнится охватывающий прямоугольник всего нарисованного, и
- * отдаётся только он. Подсветка клавиши стоит долю процента кадра.
+ * Теперь помнится, что нарисовано, и отдаётся только это.
  *
- * Прямоугольник намеренно ОДИН, а не список: список точнее, но требует
- * решать, когда объединять его куски, а когда отдавать по отдельности.
- * Для нашей отрисовки — фон, кнопки, текст — охватывающего достаточно, и
- * ошибиться в нём негде. */
-static int g_dx0 = 0, g_dy0 = 0, g_dx1 = 0, g_dy1 = 0;
+ * НЕСКОЛЬКО ПРЯМОУГОЛЬНИКОВ, А НЕ ОДИН. Сперва помнился один охватывающий
+ * — и на экранной клавиатуре он оказался худшим случаем: нажатие меняет
+ * подсветку клавиши внизу экрана и клетку терминала вверху, а охватывающий
+ * прямоугольник двух далёких точек — почти весь экран. Каждое нажатие
+ * снова стоило целого кадра.
+ *
+ * Теперь их до четырёх. Близкие и пересекающиеся сливаются (иначе рядом
+ * стоящие буквы строки дали бы по прямоугольнику на каждую), а когда
+ * места нет — новый сливается с тем, чей охват вырастет меньше всего.
+ * Отдать лишнее не страшно; не отдать нарисованное нельзя — поэтому
+ * слияние всегда только расширяет. */
+#define DIRTY_MAX   4
+#define DIRTY_NEAR  24          /* ближе этого — один прямоугольник */
+
+typedef struct { int x0, y0, x1, y1; } drect_t;
+
+static drect_t g_dirty[DIRTY_MAX];
+static int     g_ndirty = 0;
 
 /* Кадр лежит в некэшируемой памяти. Тогда выталкивать кэш после
  * отрисовки не нужно — а обход шести мегабайт строками кэша стоил
  * столько же, сколько сама отрисовка. */
 static int g_fb_uncached = 0;
 
-static void dirty_none(void) { g_dx0 = g_dy0 = 0; g_dx1 = g_dy1 = 0; }
+static void dirty_none(void) { g_ndirty = 0; }
 
 static void dirty_all(void) {
-    g_dx0 = 0; g_dy0 = 0; g_dx1 = g_width; g_dy1 = g_height;
+    g_dirty[0].x0 = 0; g_dirty[0].y0 = 0;
+    g_dirty[0].x1 = g_width; g_dirty[0].y1 = g_height;
+    g_ndirty = 1;
+}
+
+static long drect_area(const drect_t *r) {
+    return (long)(r->x1 - r->x0) * (long)(r->y1 - r->y0);
+}
+
+static void drect_unite(drect_t *a, const drect_t *b) {
+    if (b->x0 < a->x0) a->x0 = b->x0;
+    if (b->y0 < a->y0) a->y0 = b->y0;
+    if (b->x1 > a->x1) a->x1 = b->x1;
+    if (b->y1 > a->y1) a->y1 = b->y1;
+}
+
+static int drect_near(const drect_t *a, const drect_t *b) {
+    return a->x0 <= b->x1 + DIRTY_NEAR && b->x0 <= a->x1 + DIRTY_NEAR &&
+           a->y0 <= b->y1 + DIRTY_NEAR && b->y0 <= a->y1 + DIRTY_NEAR;
+}
+
+static void dirty_add(int x0, int y0, int x1, int y1) {
+    drect_t n = { x0, y0, x1, y1 };
+
+    for (int i = 0; i < g_ndirty; i++) {
+        const drect_t *r = &g_dirty[i];
+        if (r->x0 <= x0 && r->y0 <= y0 && r->x1 >= x1 && r->y1 >= y1)
+            return;                             /* уже помечено */
+    }
+
+    /* Сливаем со всеми близкими — слияние может сделать близким и
+       следующий, поэтому до тех пор, пока есть что сливать. */
+    for (int again = 1; again; ) {
+        again = 0;
+        for (int i = 0; i < g_ndirty; i++) {
+            if (drect_near(&g_dirty[i], &n)) {
+                drect_unite(&n, &g_dirty[i]);
+                g_dirty[i] = g_dirty[--g_ndirty];
+                again = 1;
+                break;
+            }
+        }
+    }
+
+    if (g_ndirty < DIRTY_MAX) { g_dirty[g_ndirty++] = n; return; }
+
+    int best = 0; long best_growth = 0;
+    for (int i = 0; i < g_ndirty; i++) {
+        drect_t u = g_dirty[i];
+        drect_unite(&u, &n);
+        long growth = drect_area(&u) - drect_area(&g_dirty[i]);
+        if (i == 0 || growth < best_growth) { best = i; best_growth = growth; }
+    }
+    drect_unite(&g_dirty[best], &n);
 }
 
 static inline void dirty_point(int x, int y) {
-    if (g_dx1 == 0) {                      /* было пусто */
-        g_dx0 = x; g_dy0 = y; g_dx1 = x + 1; g_dy1 = y + 1;
-        return;
-    }
-    if (x < g_dx0)      g_dx0 = x;
-    if (y < g_dy0)      g_dy0 = y;
-    if (x + 1 > g_dx1)  g_dx1 = x + 1;
-    if (y + 1 > g_dy1)  g_dy1 = y + 1;
+    dirty_add(x, y, x + 1, y + 1);
 }
 
 static void dirty_rect(int x, int y, int w, int h) {
     if (w <= 0 || h <= 0) return;
-    dirty_point(x, y);
-    dirty_point(x + w - 1, y + h - 1);
+    dirty_add(x, y, x + w, y + h);
 }
 
 void gfxfb_mark_all_dirty(void) { dirty_all(); }
@@ -193,16 +250,12 @@ void gfxfb_clear(uint8_t color) {
     dirty_all();
 }
 
-void gfxfb_present(void) {
-    if (!g_fb) return;
-
-    /* Отдаём только то, что нарисовали. Пусто — значит и отдавать нечего:
-       это самый частый случай в главном цикле, и он должен быть
-       бесплатным. */
-    int x0 = g_dx0, y0 = g_dy0, x1 = g_dx1, y1 = g_dy1;
+static void present_rect(int x0, int y0, int x1, int y1) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > g_width)  x1 = g_width;
+    if (y1 > g_height) y1 = g_height;
     if (x0 >= x1 || y0 >= y1) return;
-
-    rgb24_table_sync();
 
     if (g_format == GFXFB_FMT_RGB24) {
         /* Три байта на пиксель, без выравнивающего байта — именно так
@@ -273,6 +326,19 @@ void gfxfb_present(void) {
         arch_dcache_clean((const void *)(g_fb + (long)y0 * g_pitch),
                           (size_t)g_pitch * (size_t)(y1 - y0));
     }
+}
+
+void gfxfb_present(void) {
+    if (!g_fb) return;
+
+    /* Отдаём только то, что нарисовали. Пусто — значит и отдавать нечего:
+       это самый частый случай в главном цикле, и он должен быть
+       бесплатным. */
+    if (g_ndirty == 0) return;
+
+    rgb24_table_sync();
+    for (int i = 0; i < g_ndirty; i++)
+        present_rect(g_dirty[i].x0, g_dirty[i].y0, g_dirty[i].x1, g_dirty[i].y1);
 
     dirty_none();
 }
