@@ -28,6 +28,8 @@ static void terminal_init(void) {
 }
 
 static void terminal_layout(int x, int y, int w, int h) {
+    if (x != g_area_x || y != g_area_y || w != g_area_w || h != g_area_h)
+        gconsole_invalidate(&g_term.console);   /* отступы тоже надо залить */
     g_area_x = x; g_area_y = y; g_area_w = w; g_area_h = h;
 
     int pad = TM.pad;
@@ -36,11 +38,21 @@ static void terminal_layout(int x, int y, int w, int h) {
 }
 
 static void terminal_render(void) {
-    /* Сначала заливаем ВСЮ отведённую область, а не только сетку символов:
-       по краям остаётся отступ шириной TM.pad, и без заливки сквозь него
-       просвечивал бы предыдущий кадр (обои домашнего экрана). */
-    hal_gfx_fill_rect(g_area_x, g_area_y, g_area_w, g_area_h, GFX_UI_BG);
+    /* Всю отведённую область, а не только сетку символов, заливаем тогда,
+       когда консоль сама собирается рисоваться целиком: по краям отступ
+       шириной TM.pad, и без заливки сквозь него просвечивал бы предыдущий
+       кадр (обои домашнего экрана).
+
+       В остальное время заливки нет вовсе — на нажатие клавиши рисуются
+       только изменившиеся клетки. Раньше каждое нажатие заливало и
+       перерисовывало полэкрана, и быстрый набор за этим не поспевал. */
+    if (!gconsole_is_valid(&g_term.console))
+        hal_gfx_fill_rect(g_area_x, g_area_y, g_area_w, g_area_h, GFX_UI_BG);
     gconsole_render(&g_term.console);
+}
+
+static void terminal_invalidate(void) {
+    gconsole_invalidate(&g_term.console);
 }
 
 static void terminal_on_key(int key) {
@@ -63,6 +75,7 @@ const touch_app_t app_terminal = {
     .init  = terminal_init,
     .layout = terminal_layout,
     .render = terminal_render,
+    .invalidate = terminal_invalidate,
     .on_touch = terminal_on_touch,
     .on_key = terminal_on_key,
     .wants_keyboard = terminal_wants_keyboard

@@ -71,6 +71,9 @@ static int g_touch_dots = 0;
 #define R_NAV     (1u << 1)     /* кнопки навигации                  */
 #define R_OSK     (1u << 2)     /* экранная клавиатура               */
 #define R_ALL     (1u << 3)     /* всё вместе, включая содержимое    */
+#define R_APP     (1u << 4)     /* только содержимое приложения — на
+                                   нажатие клавиши обычно меняется лишь
+                                   оно, а панели и клавиатура остаются */
 
 static unsigned g_redraw = R_ALL;
 
@@ -90,6 +93,15 @@ static int g_pressed_icon = -1;
 static int g_pressed_nav  = -1;
 
 static uint64_t g_last_render_ms = 0;
+
+/* Какое приложение сейчас нарисовано на экране и ничем не испорчено; -1 —
+   ни одно. Приложение, которое рисует только изменения (терминал),
+   должно знать, когда поверх него рисовал кто-то ещё. */
+static int g_app_on_screen = -1;
+
+/* Прошлая область приложения — чтобы отличать настоящую смену раскладки
+   от повторного вызова с теми же размерами. */
+static int g_area_last[4] = { -1, -1, -1, -1 };
 
 /* ---------------- Настройки (доступ из app_settings) ---------------- */
 
@@ -123,6 +135,8 @@ void touch_ui_open(const char *app_name) {
 void touch_ui_go_home(void) {
     g_screen = SCREEN_HOME;
     osk_set_visible(0);
+    g_app_on_screen = -1;
+    need_redraw(R_ALL);
 }
 
 /* ---------------- Раскладка ---------------- */
@@ -142,6 +156,17 @@ static void relayout_current_app(void) {
     g_apps[g_current]->layout(x, y, w, h);
 
     osk_layout(0, y + h, TM.screen_w);
+
+    /* Раскладка вызывается и на каждое отпускание клавиши (клавиатуру
+       могли спрятать). Полный кадр нужен только если область и правда
+       изменилась — иначе оптимизация набора теряла бы весь смысл. */
+    if (x != g_area_last[0] || y != g_area_last[1] ||
+        w != g_area_last[2] || h != g_area_last[3]) {
+        g_area_last[0] = x; g_area_last[1] = y;
+        g_area_last[2] = w; g_area_last[3] = h;
+        g_app_on_screen = -1;
+        need_redraw(R_ALL);
+    }
 }
 
 static void launch_app(int index) {
@@ -149,6 +174,8 @@ static void launch_app(int index) {
 
     g_current = index;
     g_screen  = SCREEN_APP;
+    g_app_on_screen = -1;
+    need_redraw(R_ALL);
 
     if (!g_launched[index]) {
         g_apps[index]->init();
@@ -365,13 +392,24 @@ static void draw_recents(void) {
 
 /* ---------------- Отрисовка кадра ---------------- */
 
+/* Содержимое текущего приложения. Если на экране сейчас не оно (или его
+   испортили), приложение сперва узнаёт, что рисовать надо целиком. */
+static void render_app(void) {
+    const touch_app_t *app = g_apps[g_current];
+    if (g_app_on_screen != g_current && app->invalidate)
+        app->invalidate();
+    app->render();
+    g_app_on_screen = g_current;
+}
+
 static void render_frame(void) {
     hal_debug_activity(HAL_ACT_RENDER);
     if (g_screen == SCREEN_APP && g_current >= 0) {
         /* Приложение рисует свой фон само — обои под ним не нужны и
            только съедали бы время на заливку целого экрана. */
-        g_apps[g_current]->render();
+        render_app();
     } else {
+        g_app_on_screen = -1;
         if (g_wallpaper_mode == WALLPAPER_GRADIENT)
             touch_draw_wallpaper();
         else
@@ -389,6 +427,7 @@ static void render_frame(void) {
        куда пользователь целится. На реальном устройстве это первое, чем
        проверяют калибровку сенсора. */
     if (g_touch_dots && g_pointer_down && g_last_touch_x >= 0) {
+        g_app_on_screen = -1;   /* отметка легла поверх приложения */
         int r = TM.touch / 4;
         for (int j = -r; j <= r; j++)
             for (int i = -r; i <= r; i++)
@@ -399,6 +438,7 @@ static void render_frame(void) {
     /* Курсор рисуем только там, где есть настоящий указатель (x86-сборка
        с мышью). На тачскрине его не бывает. */
     if (hal_input_has_cursor()) {
+        g_app_on_screen = -1;   /* курсор не стирается сам — нужен полный кадр */
         int cx, cy;
         hal_input_pointer_pos(&cx, &cy);
         gui_draw_cursor(cx, cy);
@@ -558,7 +598,7 @@ static void handle_pointer(int type, int x, int y) {
         need_redraw(R_OSK);
         if (key && g_screen == SCREEN_APP && g_current >= 0) {
             g_apps[g_current]->on_key(key);
-            need_redraw(R_ALL);
+            need_redraw(R_APP);
         }
         /* Клавиатуру могли спрятать клавишей "убрать" — область
            приложения из-за этого выросла. */
@@ -599,18 +639,21 @@ static void handle_key(int key) {
      */
     if (key == 27) {
         if (g_screen == SCREEN_APP) {
-            g_screen = SCREEN_HOME;
+            touch_ui_go_home();
         } else {
             int next = (g_current + 1) % APP_COUNT;
             touch_ui_open(g_apps[next]->name);
         }
+        need_redraw(R_ALL);
         return;
     }
 
     /* Всё остальное идёт активному приложению — так же, как символы с
        экранной клавиатуры. */
-    if (g_screen == SCREEN_APP && g_current >= 0)
+    if (g_screen == SCREEN_APP && g_current >= 0) {
         g_apps[g_current]->on_key(key);
+        need_redraw(R_APP);
+    }
 }
 
 /* ---------------- Точка входа ---------------- */
@@ -684,7 +727,7 @@ void touch_main(void) {
     for (;;) {
         hal_input_event_t ev;
         while (hal_input_poll(&ev)) {
-            if (ev.type == HAL_EV_KEY) { handle_key(ev.key); need_redraw(R_ALL); }
+            if (ev.type == HAL_EV_KEY) handle_key(ev.key);
             else                         handle_pointer(ev.type, ev.x, ev.y);
         }
 
@@ -714,11 +757,20 @@ void touch_main(void) {
             continue;
         }
 
+        /* Приложение могло само уйти с экрана (настройки открывают «о
+           системе»): тогда рисовать «только приложение» уже нечего. */
+        if ((g_redraw & R_APP) && !(g_screen == SCREEN_APP && g_current >= 0))
+            g_redraw |= R_ALL;
+
         if (g_redraw & R_ALL) {
             render_frame();
         } else {
             /* Порядок важен: клавиатура и панели перекрываются краями,
                и рисовать их надо в том же порядке, что и в целом кадре. */
+            if (g_redraw & R_APP) {
+                hal_debug_activity(HAL_ACT_RENDER);
+                render_app();
+            }
             if (g_redraw & R_OSK)    osk_render();
             if (g_redraw & R_STATUS) draw_status_bar();
             if (g_redraw & R_NAV)    draw_nav_bar();

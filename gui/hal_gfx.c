@@ -311,13 +311,19 @@ void hal_gfx_draw_char_scaled(int x, int y, char c, uint8_t fg, uint8_t bg, int 
 
     for (int row = 0; row < FONT_H; row++) {
         uint8_t bits = glyph[row];
-        for (int col = 0; col < FONT_W; col++) {
-            uint8_t color = ((bits >> (7 - col)) & 1) ? fg : bg;
-            /* Квадратик размером scale на scale — одним вызовом, а не
-               scale*scale отдельными точками. При нашем масштабе три это
-               девятикратная разница на каждой точке шрифта, а текста на
-               экране больше всего. */
-            gfxfb_fill_rect(x + col * scale, y + row * scale, scale, scale, color);
+        /* Подряд идущие точки одного цвета — одним прямоугольником.
+           Раньше каждая из шестидесяти четырёх точек буквы была
+           отдельным вызовом; у типичной буквы в ряду две-три смены цвета,
+           так что вызовов становится втрое-вчетверо меньше. Квадратик
+           размером scale на scale вместо scale*scale отдельных точек был
+           первым шагом той же экономии. */
+        int col = 0;
+        while (col < FONT_W) {
+            int on = (bits >> (7 - col)) & 1;
+            int start = col;
+            while (col < FONT_W && (((bits >> (7 - col)) & 1) == on)) col++;
+            gfxfb_fill_rect(x + start * scale, y + row * scale,
+                            (col - start) * scale, scale, on ? fg : bg);
         }
     }
 }

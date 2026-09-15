@@ -82,10 +82,12 @@ static void render_frame(void) {
 
     if (term_win.open && !term_win.minimized) {
         gui_draw_window_chrome(&term_win, theme == THEME_DARK);
+        gconsole_invalidate(&term.console);   /* фон окна только что залит заново */
         gconsole_render(&term.console);
     }
     if (set_win.open && !set_win.minimized) {
         gui_draw_window_chrome(&set_win, theme == THEME_DARK);
+        gconsole_invalidate(&settings.console);
         gconsole_render(&settings.console);
     }
 

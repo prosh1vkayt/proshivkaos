@@ -9,7 +9,7 @@
 #include "gconsole.h"
 #include "ramfs.h"
 
-#define TERM_LINE_BUF   48
+#define TERM_LINE_BUF   100   /* было 48: длинная команда молча обрезалась */
 #define TERM_HOME_DIR   "/root"
 
 typedef struct {

@@ -27,6 +27,7 @@ void gconsole_init(gconsole_t *gc, const gui_window_t *win, uint8_t fg, uint8_t 
     gc->use_rect = 0;
     gc->rect_x = gc->rect_y = gc->rect_w = gc->rect_h = 0;
     gc->scale = 1;
+    gc->shadow_valid = 0;
     gconsole_clear(gc);
 }
 
@@ -56,6 +57,9 @@ int gconsole_cols(const gconsole_t *gc) {
     int cols = cw / (FONT_W * gc->scale);
     return cols < 1 ? 1 : cols;
 }
+
+void gconsole_invalidate(gconsole_t *gc) { gc->shadow_valid = 0; }
+int  gconsole_is_valid(const gconsole_t *gc) { return gc->shadow_valid; }
 
 void gconsole_clear(gconsole_t *gc) {
     gc->line_count = 1;
@@ -105,6 +109,25 @@ static int wrapped_row_count(int len, int cols) {
     return (len + cols - 1) / cols;
 }
 
+/* Нарисовать клетку, если она отличается от того, что уже на экране. */
+static void put_cell(gconsole_t *gc, int use_shadow, int full,
+                     int cx, int cy, int cell_w, int cell_h, int scale,
+                     int r, int c, char ch, uint8_t fg) {
+    if (use_shadow && !full &&
+        gc->shadow_ch[r][c] == ch &&
+        (ch == ' ' || gc->shadow_fg[r][c] == fg))
+        return;                         /* на экране уже это */
+
+    /* Пробел на свежезалитом фоне рисовать незачем: это ровно фон. */
+    if (!(full && ch == ' '))
+        hal_gfx_draw_char_scaled(cx + c * cell_w, cy + r * cell_h, ch, fg, gc->bg, scale);
+
+    if (use_shadow) {
+        gc->shadow_ch[r][c] = ch;
+        gc->shadow_fg[r][c] = fg;
+    }
+}
+
 void gconsole_render(gconsole_t *gc) {
     int cx, cy, cw, ch;
     content_rect(gc, &cx, &cy, &cw, &ch);
@@ -117,7 +140,30 @@ void gconsole_render(gconsole_t *gc) {
     int rows = ch / cell_h;
     if (cols < 1 || rows < 1) return;   /* область слишком мала — рисовать нечего */
 
-    hal_gfx_fill_rect(cx, cy, cols * cell_w, rows * cell_h, gc->bg);
+    int use_shadow = (cols <= GC_SHADOW_COLS && rows <= GC_SHADOW_ROWS);
+
+    /* Полная отрисовка — когда тень не совпадает с экраном: первый раз,
+       после чужой отрисовки поверх, при смене размера, масштаба или
+       фона. Во всех остальных случаях рисуются только расхождения. */
+    int full = !use_shadow || !gc->shadow_valid ||
+               gc->shadow_x != cx || gc->shadow_y != cy ||
+               gc->shadow_cols != cols || gc->shadow_rows != rows ||
+               gc->shadow_scale != scale || gc->shadow_bg != gc->bg;
+
+    if (full) {
+        hal_gfx_fill_rect(cx, cy, cols * cell_w, rows * cell_h, gc->bg);
+        if (use_shadow) {
+            for (int r = 0; r < rows; r++)
+                for (int c = 0; c < cols; c++) {
+                    gc->shadow_ch[r][c] = ' ';
+                    gc->shadow_fg[r][c] = gc->bg;
+                }
+            gc->shadow_x = cx;       gc->shadow_y = cy;
+            gc->shadow_cols = cols;  gc->shadow_rows = rows;
+            gc->shadow_scale = scale; gc->shadow_bg = gc->bg;
+            gc->shadow_valid = 1;
+        }
+    }
 
     /* проход 1: считаем, сколько всего визуальных строк дал бы весь
        скроллбек при текущей ширине cols */
@@ -127,9 +173,10 @@ void gconsole_render(gconsole_t *gc) {
 
     int skip = (total_visual > rows) ? (total_visual - rows) : 0;
 
-    /* проход 2: рисуем только "хвост" — последние rows визуальных строк */
+    /* проход 2: "хвост" — последние rows визуальных строк, клетка за
+       клеткой, вместе с пустыми хвостами строк: иначе стёртый символ
+       остался бы на экране */
     int counter = 0;
-    int row_y = cy;
     int emitted = 0;
 
     for (int i = 0; i < gc->line_count && emitted < rows; i++) {
@@ -143,15 +190,23 @@ void gconsole_render(gconsole_t *gc) {
                 if (chunk_len > cols) chunk_len = cols;
                 if (chunk_len < 0) chunk_len = 0;
 
-                for (int ch = 0; ch < chunk_len; ch++)
-                    hal_gfx_draw_char_scaled(cx + ch * cell_w, row_y,
-                                              gc->lines[i][start + ch],
-                                              gc->color[i][start + ch], gc->bg, scale);
-
-                row_y += cell_h;
+                for (int c = 0; c < cols; c++) {
+                    if (c < chunk_len)
+                        put_cell(gc, use_shadow, full, cx, cy, cell_w, cell_h, scale,
+                                 emitted, c, gc->lines[i][start + c],
+                                 gc->color[i][start + c]);
+                    else
+                        put_cell(gc, use_shadow, full, cx, cy, cell_w, cell_h, scale,
+                                 emitted, c, ' ', gc->bg);
+                }
                 emitted++;
             }
             counter++;
         }
     }
+
+    /* Строки ниже последней — пустые. */
+    for (int r = emitted; r < rows; r++)
+        for (int c = 0; c < cols; c++)
+            put_cell(gc, use_shadow, full, cx, cy, cell_w, cell_h, scale, r, c, ' ', gc->bg);
 }

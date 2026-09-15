@@ -14,6 +14,13 @@
 #define GC_MAX_LINES    64
 #define GC_MAX_LINE_LEN 120
 
+/* Размер теневой сетки — того, что уже нарисовано на экране. На
+ * телефоне при масштабе три это около сорока на сорок клеток; с запасом
+ * на мелкий шрифт и большие окна. Если сетка больше, консоль просто
+ * рисуется целиком, как раньше. */
+#define GC_SHADOW_ROWS  128
+#define GC_SHADOW_COLS  160
+
 typedef struct {
     const gui_window_t *win;      /* может быть 0, если задан явный rect */
 
@@ -33,10 +40,32 @@ typedef struct {
     int  line_count;
     uint8_t fg, bg;
     uint8_t ink;   /* цвет, которым пишутся СЛЕДУЮЩИЕ символы — см. gconsole_set_ink() */
+
+    /* ЧТО УЖЕ НАРИСОВАНО.
+     *
+     * Раньше консоль при каждой отрисовке заливала свою область и
+     * рисовала заново ВСЕ символы. На телефоне это полэкрана на каждое
+     * нажатие клавиши — и при быстром наборе интерфейс не успевал
+     * между нажатиями.
+     *
+     * Теперь помнится, какой символ и каким цветом стоит в каждой
+     * клетке, и рисуются только расхождения. Правильность при этом
+     * получается сама: если текст прокрутился, расходятся все клетки,
+     * и перерисовывается всё. А набор одной буквы — одна клетка. */
+    char    shadow_ch[GC_SHADOW_ROWS][GC_SHADOW_COLS];
+    uint8_t shadow_fg[GC_SHADOW_ROWS][GC_SHADOW_COLS];
+    int     shadow_valid;
+    int     shadow_x, shadow_y, shadow_cols, shadow_rows, shadow_scale;
+    uint8_t shadow_bg;
 } gconsole_t;
 
 void gconsole_init(gconsole_t *gc, const gui_window_t *win, uint8_t fg, uint8_t bg);
 void gconsole_clear(gconsole_t *gc);
+
+/* Экран под консолью изменил кто-то другой: следующая отрисовка будет
+ * полной. Нужна при возврате в приложение с другого экрана. */
+void gconsole_invalidate(gconsole_t *gc);
+int  gconsole_is_valid(const gconsole_t *gc);
 void gconsole_putc(gconsole_t *gc, char c);
 void gconsole_write(gconsole_t *gc, const char *s);
 void gconsole_render(gconsole_t *gc);   /* пересчитывает перенос строк и рисует */
