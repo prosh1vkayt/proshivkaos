@@ -40,6 +40,27 @@
 #define DESC_SH_INNER   (3ULL << 8)   /* inner shareable                    */
 #define DESC_AF         (1ULL << 10)  /* Access Flag: без него — сбой доступа */
 
+/* ЗАПРЕТ ИСПОЛНЕНИЯ — НА ВСЁ, КРОМЕ СОБСТВЕННОГО КОДА.
+ *
+ * Архитектура требует этого прямо (ARM ARM, раздел о типе памяти Device):
+ * тип «память устройств» запрещает процессору наперёд ЧИТАТЬ данные, но
+ * не запрещает наперёд ВЫБИРАТЬ КОМАНДЫ. Предсказатель переходов может
+ * отправить спекулятивную выборку по любому адресу, который когда-то
+ * встретился ему как цель, — и если там регистры устройства, выборка
+ * становится настоящим обращением к шине.
+ *
+ * На Qualcomm такое обращение к защищённому или неподтактированному блоку
+ * заканчивается перезагрузкой через PS_HOLD, без единого исключения на
+ * нашем уровне: спекулятивные сбои не сообщаются. Именно это мы и видели
+ * месяцами — смерть под сложной работой (отрисовка, обмен по I2C), зависящую
+ * от раскладки кода (от неё зависит, что запомнит предсказатель), случайную
+ * от запуска к запуску и невоспроизводимую в эмуляторе, где предсказателя
+ * нет. PXN/UXN снимают саму возможность: выборка команд оттуда запрещена
+ * и спекулятивно. */
+#define DESC_PXN        (1ULL << 53)
+#define DESC_UXN        (1ULL << 54)
+#define DESC_XN         (DESC_PXN | DESC_UXN)
+
 #define MAIR_IDX_DEVICE 0
 #define MAIR_IDX_NORMAL 1
 #define MAIR_IDX_NC     2    /* обычная память без кэширования */
@@ -138,18 +159,20 @@ void mmu_init(const void *dtb) {
                    обстоятельствах: чтение регистра статуса из кэша вернёт
                    вчерашнее значение. */
                 desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_DEVICE) |
-                       DESC_AP_RW_EL1 | DESC_AF;
+                       DESC_AP_RW_EL1 | DESC_AF | DESC_XN;
             } else if (phys >= dma_lo && phys < dma_hi) {
                 /* Обмен с устройствами: обычная память, но без кэша.
                    Устройства памяти не кэшируют и о наших кэшах не знают. */
                 desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NC) |
-                       DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF;
-            } else if ((phys >= img_lo && phys < img_hi) ||
-                       (dtb_hi && phys >= dtb_lo && phys < dtb_hi)) {
+                       DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF | DESC_XN;
+            } else if (phys >= img_lo && phys < img_hi) {
                 /* Наша собственная память — единственное, что имеет смысл
-                   кэшировать. */
+                   кэшировать, и единственное, откуда можно исполнять. */
                 desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NORMAL) |
                        DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF;
+            } else if (dtb_hi && phys >= dtb_lo && phys < dtb_hi) {
+                desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NORMAL) |
+                       DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF | DESC_XN;
             }
 #ifdef BOARD_SMEM_BASE
             else if (in_range(phys, (uint64_t)BOARD_SMEM_BASE,
@@ -158,7 +181,7 @@ void mmu_init(const void *dtb) {
                    нельзя: написанное нами должен увидеть сопроцессор
                    питания, а написанное им — мы. */
                 desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_DEVICE) |
-                       DESC_AP_RW_EL1 | DESC_AF;
+                       DESC_AP_RW_EL1 | DESC_AF | DESC_XN;
             }
 #endif
 #ifdef BOARD_HAS_STATIC_FB
@@ -171,7 +194,7 @@ void mmu_init(const void *dtb) {
                    устройств — чтобы не кэшировалось и не читалось
                    наперёд. */
                 desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_DEVICE) |
-                       DESC_AP_RW_EL1 | DESC_AF;
+                       DESC_AP_RW_EL1 | DESC_AF | DESC_XN;
             }
 #endif
             g_l2[gib][i] = desc;
