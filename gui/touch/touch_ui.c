@@ -25,6 +25,7 @@
 #include "osk.h"
 #include "hal.h"
 #include "hal_gfx.h"
+#include "gfxfb.h"
 #include "hal_input.h"
 #include "hal_time.h"
 
@@ -635,7 +636,94 @@ static void handle_pointer(int type, int x, int y) {
         g_apps[g_current]->on_touch(type, x, y);
 }
 
+/* ---------------- Бенчмарк ---------------- */
+
+static void bench_num(const char *label, uint64_t v, const char *unit) {
+    char num[24];
+    int n = 0;
+    char tmp[24];
+    if (v == 0) tmp[n++] = '0';
+    while (v) { tmp[n++] = (char)('0' + v % 10); v /= 10; }
+    for (int i = 0; i < n; i++) num[i] = tmp[n - 1 - i];
+    num[n] = 0;
+    hal_debug_text(label);
+    hal_debug_text(num);
+    hal_debug_text(unit);
+}
+
+/* ЗАМЕР ВМЕСТО ОЩУЩЕНИЙ.
+ *
+ * «Тормозит» — не диагноз. Этот замер раскладывает кадр на части: сколько
+ * стоит нарисовать экран в буфере, сколько — отдать его в память экрана,
+ * и сколько стоит одна буква в терминале. Запускается клавишей с кодом 1,
+ * которую присылает компьютер (posdev bench). */
+static void run_bench(void) {
+    const int N = 20;
+    uint64_t draw = 0, present = 0, px = 0;
+
+    hal_debug_text("BENCH: nachinaem\n");
+
+    /* Частота процессора — по счётчику тактов PMU за 200 мс занятой
+       работы. Точнее любых пустых циклов: считает сами такты. */
+    {
+        extern uint64_t arch_cycles_per_second(void);
+        uint64_t hz = arch_cycles_per_second();
+        bench_num("BENCH: chastota processora ", hz / 1000000u, " MGc\n");
+    }
+
+    touch_ui_go_home();
+    for (int i = 0; i < N; i++) {
+        gfxfb_mark_all_dirty();
+        uint64_t t0 = hal_time_us();
+        render_frame();
+        uint64_t t = hal_time_us() - t0;
+        uint32_t pus, ppx;
+        gfxfb_last_present(&pus, &ppx);
+        draw += t - pus; present += pus; px += ppx;
+    }
+    bench_num("BENCH: rabochiy stol, risovanie ", draw / N, " mks");
+    bench_num(", vyvod ", present / N, " mks");
+    bench_num(", pikseley ", px / N, "");
+    bench_num(", kadrov v sekundu ", 1000000u * N / (draw + present + 1), "\n");
+
+    uint64_t only = 0;
+    for (int i = 0; i < N; i++) {
+        gfxfb_mark_all_dirty();
+        hal_gfx_present();
+        uint32_t pus, ppx;
+        gfxfb_last_present(&pus, &ppx);
+        only += pus;
+    }
+    bench_num("BENCH: tolko vyvod polnogo kadra ", only / N, " mks\n");
+
+    /* Буква в терминале — путь нажатия клавиши целиком: приложение,
+       подсветка клавиатуры не трогается, вывод изменившегося. */
+    touch_ui_open("TERMINAL");
+    render_frame();
+    uint64_t key_draw = 0, key_present = 0, key_px = 0;
+    const int K = 40;
+    for (int i = 0; i < K; i++) {
+        g_apps[g_current]->on_key(i % 20 == 19 ? '\b' : 'a' + i % 26);
+        uint64_t t0 = hal_time_us();
+        render_app();
+        hal_gfx_present();
+        uint64_t t = hal_time_us() - t0;
+        uint32_t pus, ppx;
+        gfxfb_last_present(&pus, &ppx);
+        key_draw += t - pus; key_present += pus; key_px += ppx;
+    }
+    bench_num("BENCH: bukva v terminale, risovanie ", key_draw / K, " mks");
+    bench_num(", vyvod ", key_present / K, " mks");
+    bench_num(", pikseley ", key_px / K, "\n");
+
+    touch_ui_go_home();
+    need_redraw(R_ALL);
+    hal_debug_text("BENCH: gotovo\n");
+}
+
 static void handle_key(int key) {
+    if (key == 1) { run_bench(); return; }
+
     /*
      * ESC — это "назад" телефона, и на mido его посылает единственная
      * доступная аппаратная клавиша (увеличение громкости).

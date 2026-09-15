@@ -118,6 +118,13 @@ void hal_gfx_set_image_palette(const uint8_t *rgb_255, int count, int start_inde
 
 /* ---------------- Примитивы (общие для всех платформ) ---------------- */
 void hal_gfx_put_pixel(int x, int y, uint8_t color);
+
+/* ---- Истинный цвет: rgb = 0x00RRGGBB, непрозрачность 0..255 ---- */
+uint32_t hal_gfx_palette_rgb(uint8_t idx);
+void hal_gfx_fill_rect_rgb(int x, int y, int w, int h, uint32_t rgb);
+void hal_gfx_gradient_v_rgb(int x, int y, int w, int h, uint32_t top, uint32_t bottom);
+void hal_gfx_fill_rounded_rect_rgb(int x, int y, int w, int h, uint32_t rgb,
+                                   int radius, uint32_t alpha255);
 void hal_gfx_fill_rect(int x, int y, int w, int h, uint8_t color);
 void hal_gfx_draw_rect(int x, int y, int w, int h, uint8_t color); /* контур, 1px */
 void hal_gfx_clear(uint8_t color);

@@ -186,8 +186,21 @@ void mmu_init(const void *dtb) {
 #endif
 #ifdef BOARD_HAS_STATIC_FB
             else if (in_range(phys, (uint64_t)BOARD_FB_ADDR,
-                              (uint64_t)BOARD_FB_STRIDE * BOARD_FB_HEIGHT) ||
-                     in_range(phys, (uint64_t)BOARD_PSTORE_BASE,
+                              (uint64_t)BOARD_FB_STRIDE * BOARD_FB_HEIGHT)) {
+                /* Кадр — обычная DDR, которую контроллер дисплея читает
+                   сам. Тип «память устройств» делал каждую запись в неё
+                   отдельной транзакцией шины без объединения: полный кадр
+                   стоил 51 мс, некэшируемая обычная — 37 мс (кэшируемая
+                   со сбросом кэша не быстрее, замерено). Обычная память
+                   разрешает процессору писать пачками, а без кэша дисплей
+                   сразу видит записанное. Раньше такая попытка роняла
+                   загрузку — но тогда на карте не было запрета исполнения
+                   (см. DESC_XN выше), и обычная память без него давала
+                   процессору ещё больше свободы для спекуляций. */
+                desc = phys | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NC) |
+                       DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF | DESC_XN;
+            }
+            else if (in_range(phys, (uint64_t)BOARD_PSTORE_BASE,
                               (uint64_t)BOARD_PSTORE_SIZE) ||
                      (log_size && in_range(phys, log_base, log_size))) {
                 /* Кадр и журнал: общие с тем, что вне процессора. Память

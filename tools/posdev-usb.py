@@ -286,6 +286,32 @@ def main():
         print("otveta net vovse")
         return 1
 
+    if mode == "bench":
+        # Замер кадра: клавиша с кодом 1 запускает бенчмарк в оболочке,
+        # итог приходит строками BENCH по проводу.
+        dev = open_device(30.0)
+        if dev is None:
+            sys.stderr.write("posdev: устройство не появилось\n")
+            return 2
+        try:
+            while True:
+                dev.read(EP_IN, 4096, timeout=200)
+        except usb.core.USBError:
+            pass
+        dev.write(EP_OUT, b"POSk\x01", timeout=1000)
+        buf = b""
+        t0 = time.time()
+        while time.time() - t0 < 60 and b"BENCH: gotovo" not in buf:
+            try:
+                buf += bytes(dev.read(EP_IN, 4096, timeout=300))
+            except usb.core.USBError:
+                pass
+        for line in buf.decode("utf-8", "replace").splitlines():
+            if line.startswith("BENCH"):
+                print(line)
+        usb.util.dispose_resources(dev)
+        return 0 if b"BENCH: gotovo" in buf else 1
+
     if mode == "stress":
         return stress(float(sys.argv[2]) if len(sys.argv) > 2 else 60.0,
                       float(sys.argv[3]) if len(sys.argv) > 3 else 40.0)
