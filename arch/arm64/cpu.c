@@ -315,6 +315,16 @@ void hal_arch_init(void *boot_info) {
     boot_anim_step();
 #endif
 
+#ifdef CONFIG_CPUFREQ_MSM8953
+    /* Ядра — с 800 МГц загрузчика на штатные 2016. Сразу после канала к
+       сопроцессору питания: ФАПЧ ядер нужен голос за уровень MX. При любом
+       отказе ядра остаются на прежней частоте. */
+    {
+        extern int msm8953_cpu_boost(int idx);
+        msm8953_cpu_boost(6);
+    }
+#endif
+
     ramoops_write("[5] hal_arch_init zavershen\n");
 }
 

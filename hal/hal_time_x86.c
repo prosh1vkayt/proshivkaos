@@ -17,6 +17,12 @@ uint64_t hal_time_ms(void) {
     return pit_uptime_ms();
 }
 
+uint64_t arch_cycles_per_second(void) { return 0; }
+
+uint64_t hal_time_us(void) {
+    return pit_uptime_ms() * 1000u;
+}
+
 void hal_time_rtc(int *year, int *month, int *day, int *hour, int *min, int *sec) {
     rtc_read(year, month, day, hour, min, sec);
 }

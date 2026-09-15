@@ -277,6 +277,12 @@ static void do_arg_command(void) {
         hal_input_inject_key(g_arg[0]);
     else if (g_arg_cmd == 't')
         hal_input_inject_tap((g_arg[0] << 8) | g_arg[1], (g_arg[2] << 8) | g_arg[3]);
+#ifdef CONFIG_CPUFREQ_MSM8953
+    else if (g_arg_cmd == 'f') {
+        extern int msm8953_cpu_boost(int idx);
+        msm8953_cpu_boost(g_arg[0]);
+    }
+#endif
 }
 
 static void do_command(uint8_t c) {
@@ -336,6 +342,41 @@ static void do_command(uint8_t c) {
         }
         break;
     }
+
+#ifdef BOARD_IMEM_RESTART_REASON
+    case 'c': {
+        /* Тактирование ядер — только чтение. ФАПЧ ядер (HF PLL), выбор
+           источника у двух кластеров и у межкластерной шины, ускоритель
+           памяти ядер и переключатель её питания (APM). */
+        static const struct { const char *name; uint32_t addr; } regs[] = {
+            { "pll mode ", 0x0B116000 }, { "pll l    ", 0x0B116004 },
+            { "pll alpha", 0x0B116008 }, { "pll 0c   ", 0x0B11600C },
+            { "pll user ", 0x0B116010 }, { "pll cfg  ", 0x0B116014 },
+            { "pll cfghi", 0x0B116018 }, { "pll tstlo", 0x0B11601C },
+            { "pll tsthi", 0x0B116020 }, { "pll 24   ", 0x0B116024 },
+            { "c0 cmd   ", 0x0B111050 }, { "c0 cfg   ", 0x0B111054 },
+            { "c1 cmd   ", 0x0B011050 }, { "c1 cfg   ", 0x0B011054 },
+            { "cci cmd  ", 0x0B1D1050 }, { "cci cfg  ", 0x0B1D1054 },
+            { "apm stat ", 0x0B1112B0 }, { "memacc l1", 0x019461D4 },
+            { "memacc l2", 0x019461D8 },
+        };
+        static const char hexd[] = "0123456789ABCDEF";
+        for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
+            char line[40];
+            int n = 0;
+            const char *nm = "CLK: ";
+            while (*nm) line[n++] = *nm++;
+            for (const char *q = regs[i].name; *q; q++) line[n++] = *q;
+            line[n++] = ' ';
+            uint32_t v = mmio_read32(regs[i].addr);
+            for (int sh = 28; sh >= 0; sh -= 4) line[n++] = hexd[(v >> sh) & 0xF];
+            line[n++] = '\n';
+            line[n] = 0;
+            usb_log_write(line);
+        }
+        break;
+    }
+#endif
 
 #ifdef CONFIG_SCM
     case 'q': {
@@ -409,10 +450,10 @@ void usb_pos_received(const uint8_t *data, int len) {
         /* Последовательность набрана — эта буква может быть опасной. */
         g_magic_pos = 0;
 
-        if (c == 'k' || c == 't') {
+        if (c == 'k' || c == 't' || c == 'f') {
             g_arg_cmd = c;
             g_arg_have = 0;
-            g_arg_need = (c == 'k') ? 1 : 4;
+            g_arg_need = (c == 't') ? 4 : 1;
             continue;
         }
 

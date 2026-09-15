@@ -86,6 +86,34 @@ uint64_t hal_time_ms(void) {
     return delta / ticks_per_ms;
 }
 
+/* Такты процессора в секунду — по счётчику циклов PMU (PMCCNTR_EL0) за
+ * 200 мс занятой работы. Нужен, чтобы знать, на какой частоте загрузчик
+ * оставил ядра: от этого зависит всё быстродействие системы. */
+uint64_t arch_cycles_per_second(void) {
+    uint64_t v;
+    __asm__ volatile ("mrs %0, pmcr_el0" : "=r"(v));
+    v |= 1u | 4u;                                   /* E и сброс счётчика тактов */
+    __asm__ volatile ("msr pmcr_el0, %0" :: "r"(v));
+    v = 1ull << 31;
+    __asm__ volatile ("msr pmcntenset_el0, %0" :: "r"(v));
+
+    uint64_t c0, c1;
+    __asm__ volatile ("mrs %0, pmccntr_el0" : "=r"(c0));
+    uint64_t f = g_freq_hz ? g_freq_hz : 19200000;
+    uint64_t end = read_cntpct() + f / 5;
+    while (read_cntpct() < end) { }
+    __asm__ volatile ("mrs %0, pmccntr_el0" : "=r"(c1));
+    return (c1 - c0) * 5;
+}
+
+uint64_t hal_time_us(void) {
+    uint64_t delta = read_cntpct() - g_start_tick;
+    uint64_t f = g_freq_hz ? g_freq_hz : 19200000;
+    /* Целые секунды и остаток отдельно: delta * 10^6 переполнилось бы
+       через шестнадцать минут. */
+    return (delta / f) * 1000000u + ((delta % f) * 1000000u) / f;
+}
+
 /* Задержка в микросекундах.
  *
  * Понадобилась драйверам, которые разговаривают с железом напрямую:

@@ -252,6 +252,16 @@ static void rpm_keepalive_votes(void) {
                               : "RPM: golosa za takty NE USHLI\n");
 }
 
+/* Уровень питания памяти кристалла (MX, источник S7). От него питается
+   и ФАПЧ ядер: по драйверу тактирования ей нужен хотя бы SVS. */
+int rpm_vote_mx_level(uint32_t level) {
+    if (!g_ready) return 0;
+    g_quiet_send = 1;
+    int ok = rpm_request1(0x61706D73u /* "smpa" */, 7, 0x6C766C76u /* "vlvl" */, level);
+    g_quiet_send = 0;
+    return ok;
+}
+
 int smd_rpm_init(void) {
     g_ready = 0;
 

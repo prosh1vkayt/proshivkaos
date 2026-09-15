@@ -293,6 +293,9 @@ else
   ifneq ($(call cfg,SCM),)
     ARCH_BASE_SOURCES += arch/arm64/scm.c
   endif
+  ifneq ($(call cfg,CPUFREQ_MSM8953),)
+    ARCH_BASE_SOURCES += arch/arm64/cpufreq_msm8953.c
+  endif
 
   BOOT_ASM :=
   BOOT_S   := arch/arm64/boot.S arch/arm64/vectors.S
