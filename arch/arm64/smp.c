@@ -15,10 +15,21 @@
  * которую мы перед запуском выталкиваем из кэша в ОЗУ: без трансляции ядро
  * читает память мимо кэша, и незаписанное туда увидело бы устаревшим.
  *
- * КАК РАБОТАЮТ. Прерываний в системе нет, поэтому ядра ждут работы в WFE, а
- * основное будит их командой SEV. Защёлка события в WFE не даёт пропустить
- * побудку, даже если она пришла чуть раньше, чем ядро уснуло. WFE, а не
- * WFI: на WFI контроллер сна может погасить ядро целиком.
+ * КАК РАБОТАЮТ. Прерываний в системе нет. Задумано было ждать в WFE и
+ * будить командой SEV — и на телефоне это не работает: ядра выходят из WFE
+ * не по SEV, а изредка, раз в сотню-другую миллисекунд, по чужим событиям
+ * (похоже, WFE перехватывает доверенная среда). Замерено: первую работу
+ * ядро взяло через две с лишним секунды.
+ *
+ * Поэтому два режима, и переключает их только основное ядро:
+ *   - РАБОТА: пока задания идут, ядра крутятся в ожидании и берут задание
+ *     мгновенно. Вывод полного кадра на четырёх ядрах — 2,7 мс вместо 10.
+ *   - СОН: полсекунды без заданий — основное объявляет сон, ядра уходят в
+ *     WFE. Крутиться всё время нельзя: три ядра на 2016 МГц нагревали
+ *     кристалл с 45 до 70 °C за пять минут.
+ * Основное раздаёт части только ядрам, подтвердившим, что они не спят, и
+ * объявляет сон раньше, чем ядра могут уснуть, — задание никогда не
+ * достаётся спящему. Проснувшись (по снятому запрету), ядро снова в работе.
  */
 #include "arm64.h"
 #include "fdt.h"
@@ -39,8 +50,14 @@ typedef struct {
 static uint64_t  g_stacks[SMP_MAX][STACK_WORDS];
 static smp_ctx_t g_ctx[SMP_MAX];
 
-static volatile int      g_cores = 1;
+static volatile int      g_cores = 1;            /* запущено всего */
 static volatile int      g_online[SMP_MAX];
+static volatile int      g_sleep_req = 0;        /* основное: «спите»     */
+static volatile int      g_awake[SMP_MAX];       /* ядро: «не сплю»       */
+static volatile int      g_part_of[SMP_MAX];     /* доля ядра в задании   */
+static uint64_t          g_last_job_ms = 0;
+static uint64_t g_par_calls = 0, g_par_caller = 0, g_par_fn = 0;
+#define SMP_IDLE_SLEEP_MS 500
 static volatile uint32_t g_gen = 0;
 static volatile uint32_t g_done[SMP_MAX];
 static par_fn            volatile g_fn;
@@ -98,46 +115,135 @@ __asm__(
 );
 uint64_t smp_smc_raw4(uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3);
 
+static volatile uint32_t g_seen_gen[SMP_MAX];
+static volatile int      g_seen_parts[SMP_MAX];
+static volatile uint64_t g_beats[SMP_MAX];
+static volatile uint32_t g_wakes[SMP_MAX];
+
 void smp_secondary_main(uint64_t idx) {
     g_online[idx] = 1;
     uint32_t seen = g_gen;
     for (;;) {
+        if (g_sleep_req) {
+            /* Сон объявлен: подтверждаем и спим. Основное перестало
+               раздавать задания до объявления, так что пропустить нечего. */
+            g_awake[idx] = 0;
+            while (g_sleep_req) { __asm__ volatile ("wfe"); g_wakes[idx]++; }
+            seen = g_gen;               /* всё, что было до сна, — не наше */
+            continue;
+        }
+        g_awake[idx] = 1;
+
         uint32_t gen = g_gen;
+        g_beats[idx]++;
+        g_seen_gen[idx] = gen;
         if (gen != seen) {
             seen = gen;
-            g_fn(g_arg, (int)idx, g_parts);
+            int part = g_part_of[idx];
+            int parts = g_parts;
+            g_seen_parts[idx] = parts;
+            if (part > 0 && part < parts)
+                g_fn(g_arg, part, parts);
             g_done[idx] = gen;
         } else {
-            __asm__ volatile ("wfe");
+            __asm__ volatile ("yield");
         }
     }
 }
 
+/* Основное: полсекунды без заданий — ядрам спать. Вызывается из фоновой
+   прокрутки. */
+void hal_smp_idle(void) {
+    if (g_cores <= 1 || g_sleep_req) return;
+    if (hal_time_ms() - g_last_job_ms >= SMP_IDLE_SLEEP_MS)
+        g_sleep_req = 1;
+}
+
 int smp_cores(void) { return g_cores; }
 
-/* Разделить работу на все ядра и дождаться всех. part 0 — наша доля. */
+/* Что видит каждое ядро — по проводу, команда m. */
+void smp_report(void) {
+    early_con_puts("SMP: yader v rabote ");
+    early_con_hex32((uint32_t)g_cores);
+    early_con_puts(" pokolenie ");
+    early_con_hex32(g_gen);
+    early_con_puts(" son ");
+    early_con_hex32((uint32_t)g_sleep_req);
+    early_con_puts(" vyzovov ");
+    early_con_hex32((uint32_t)g_par_calls);
+    extern char __image_start[];
+    early_con_puts(" otkuda +");
+    early_con_hex32((uint32_t)(g_par_caller - (uint64_t)(uintptr_t)__image_start));
+    early_con_puts(" chto +");
+    early_con_hex32((uint32_t)(g_par_fn - (uint64_t)(uintptr_t)__image_start));
+    early_con_puts("\n");
+    for (int i = 1; i < SMP_MAX; i++) {
+        early_con_puts("SMP:  yadro ");
+        early_con_hex32((uint32_t)i);
+        early_con_puts(" na svyazi ");
+        early_con_hex32((uint32_t)g_online[i]);
+        early_con_puts(" vidit ");
+        early_con_hex32(g_seen_gen[i]);
+        early_con_puts(" sdelal ");
+        early_con_hex32(g_done[i]);
+        early_con_puts(" chastey ");
+        early_con_hex32((uint32_t)g_seen_parts[i]);
+        early_con_puts(" oborotov ");
+        early_con_hex32((uint32_t)g_beats[i]);
+        early_con_puts(" ne splyu ");
+        early_con_hex32((uint32_t)g_awake[i]);
+        early_con_puts(" probuzhdeniy ");
+        early_con_hex32(g_wakes[i]);
+        early_con_puts("\n");
+    }
+}
+
+/* Разделить работу на все бодрствующие ядра и дождаться их. part 0 — наша. */
 void hal_parallel(par_fn fn, void *arg) {
-    int n = g_cores;
-    if (n <= 1) { fn(arg, 0, 1); return; }
+    g_last_job_ms = hal_time_ms();
+    g_par_calls++;
+    g_par_caller = (uint64_t)(uintptr_t)__builtin_return_address(0);
+    g_par_fn = (uint64_t)(uintptr_t)fn;
+
+    if (g_cores <= 1) { fn(arg, 0, 1); return; }
+
+    if (g_sleep_req) {
+        /* Ядра спят или засыпают: будим (они увидят снятый запрет при
+           ближайшем выходе из WFE), а это задание делаем сами. */
+        g_sleep_req = 0;
+        __asm__ volatile ("sev");
+        fn(arg, 0, 1);
+        return;
+    }
+
+    int parts = 1;
+    int who[SMP_MAX];
+    for (int i = 1; i < g_cores; i++) {
+        if (g_awake[i]) { g_part_of[i] = parts; who[parts] = i; parts++; }
+        else            g_part_of[i] = 0;
+    }
+    if (parts == 1) { fn(arg, 0, 1); return; }
 
     g_fn = fn;
     g_arg = arg;
-    g_parts = n;
+    g_parts = parts;
     uint32_t gen = g_gen + 1;
     g_gen = gen;
-    __asm__ volatile ("sev");
 
-    fn(arg, 0, n);
+    fn(arg, 0, parts);
 
     uint64_t deadline = hal_time_ms() + 2000;
-    for (int i = 1; i < n; i++) {
+    for (int k = 1; k < parts; k++) {
+        int i = who[k];
         while (g_done[i] != gen) {
             if (hal_time_ms() > deadline) {
-                /* Ядро не отозвалось: доделываем его долю сами и больше на
-                   него не рассчитываем. Лучше медленно, чем недорисованно. */
-                early_con_puts("SMP: yadro ne otvetilo, rabotaem bez nego\n");
-                for (int k = i; k < n; k++)
-                    if (g_done[k] != gen) fn(arg, k, n);
+                /* Бодрствующее ядро не отозвалось — это уже поломка, а не
+                   сон. Не ждём его больше никогда. Его долю досчитать
+                   нельзя: оно может взяться за неё позже, одновременно с
+                   нами. Кадр выйдет с полосой — лучше, чем зависание. */
+                early_con_puts("SMP: yadro ne otvetilo, otklyuchaem ego, nomer ");
+                early_con_hex32((uint32_t)i);
+                early_con_puts("\n");
                 g_cores = i;
                 return;
             }

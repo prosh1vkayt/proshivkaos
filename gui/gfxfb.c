@@ -32,6 +32,12 @@ void gfxfb_last_present(uint32_t *us, uint32_t *pixels) {
     *pixels = g_last_present_px;
 }
 
+/* С какой площади задание стоит раздавать ядрам. Ниже — дешевле сделать
+   самому: строка состояния с часами (70 тысяч пикселей раз в секунду)
+   при прежнем пороге в 60 тысяч будила спящие ядра каждую секунду, и
+   телефон не остывал. */
+#define PARALLEL_MIN_PIXELS 300000L
+
 static volatile uint8_t *g_fb = 0;
 static int g_width  = 0;
 static int g_height = 0;
@@ -281,7 +287,7 @@ void gfxfb_fill_rect_rgb(int x, int y, int w, int h, uint32_t rgb) {
     int x0 = x, y0 = y, x1 = x + w, y1 = y + h;
     if (!clip_rect(&x0, &y0, &x1, &y1)) return;
     fill_job_t job = { x0, x1, y0, y1, rgb, 0 };
-    if ((long)(x1 - x0) * (y1 - y0) >= 250000) hal_parallel(fill_band, &job);
+    if ((long)(x1 - x0) * (y1 - y0) >= PARALLEL_MIN_PIXELS) hal_parallel(fill_band, &job);
     else fill_band(&job, 0, 1);
     dirty_rect(x0, y0, x1 - x0, y1 - y0);
 }
@@ -446,7 +452,7 @@ static void present_rect(int x0, int y0, int x1, int y1) {
         x1 = (x1 + 3) & ~3;
         if (x1 > g_width) x1 = g_width;
 
-        if ((long)(x1 - x0) * (y1 - y0) < 60000) {
+        if ((long)(x1 - x0) * (y1 - y0) < PARALLEL_MIN_PIXELS) {
             present_rows_rgb24(x0, x1, y0, y1);
         } else {
             band_job_t job = { x0, x1, y0, y1 };
@@ -454,7 +460,7 @@ static void present_rect(int x0, int y0, int x1, int y1) {
         }
     } else if (g_format == GFXFB_FMT_XRGB32) {
         band_job_t job = { x0, x1, y0, y1 };
-        if ((long)(x1 - x0) * (y1 - y0) < 60000) present_band_xrgb(&job, 0, 1);
+        if ((long)(x1 - x0) * (y1 - y0) < PARALLEL_MIN_PIXELS) present_band_xrgb(&job, 0, 1);
         else hal_parallel(present_band_xrgb, &job);
     } else {
         quant_sync();

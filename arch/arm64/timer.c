@@ -148,6 +148,7 @@ __attribute__((weak)) void hal_usb_pump(void) { }
 __attribute__((weak)) void hal_watchdog_pet(void) { }
 __attribute__((weak)) void boot_anim_tick(void) { }
 __attribute__((weak)) void hal_rpm_pump(void) { }
+__attribute__((weak)) void hal_smp_idle(void) { }
 
 void hal_background_poll(void) {
     hal_watchdog_pet();
@@ -158,6 +159,7 @@ void hal_background_poll(void) {
        потерялся и не доехал ни до одного коммита. Ответы копились
        непрочитанными с первой же просьбы. */
     hal_rpm_pump();
+    hal_smp_idle();
     /* Пока идёт загрузка — двигаем полосу. Она рисует один небольшой
        прямоугольник, поэтому её можно звать из любого ожидания. */
     boot_anim_tick();
