@@ -209,13 +209,16 @@ GFX_COMMON_SOURCES := \
     gui/hal_gfx.c \
     gui/font8x8.c \
     gui/font.c \
-    gui/font_data.c
+    gui/font_data.c \
+    gui/icon.c \
+    gui/icon_data.c
 
 # Сглаженные шрифты растрируются на компьютере (нужен Pillow). Готовый
 # gui/font_data.c лежит в репозитории, так что без Python сборка тоже идёт;
 # пересобрать: make fonts
 fonts:
 	python3 tools/fontgen.py > gui/font_data.c
+	python3 tools/icongen.py > gui/icon_data.c
 
 ifeq ($(ARCH),x86)
 

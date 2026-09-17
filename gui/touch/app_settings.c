@@ -7,6 +7,7 @@
  * ряды-переключатели и кнопки, в которые попадаешь пальцем.
  */
 #include "touch_app.h"
+#include "icon.h"
 #include "touch_theme.h"
 #include "hal_input.h"
 
@@ -73,12 +74,8 @@ static void draw_row(int index, const char *title) {
 /* Шеврон ">" в правом краю ряда: общепринятый знак "здесь можно провалиться
  * глубже". Рисуется примитивами, а не буквой — так он тоньше и симметричнее. */
 static void draw_chevron(int cx, int cy, int size, uint8_t color) {
-    /* Обе линии сходятся в точку СПРАВА: ">", а не "<". Остриё указывает
-       туда, куда ведёт ряд. */
-    for (int i = 0; i <= size; i++) {
-        hal_gfx_fill_rect(cx + i, cy - (size - i), 2, 2, color);
-        hal_gfx_fill_rect(cx + i, cy + (size - i), 2, 2, color);
-    }
+    int is = size * 3;
+    icon_draw(ICON_CHEVRON_RIGHT, cx - is / 3, cy - is / 2, is, hal_gfx_palette_rgb(color));
 }
 
 static void settings_render(void) {
@@ -229,6 +226,7 @@ static int  settings_wants_keyboard(void) { return 0; }
 const touch_app_t app_settings = {
     .name  = "SETTINGS",
     .glyph = "*",
+    .icon  = ICON_SETTINGS + 1,
     .color = GFX_UI_WARN,
     .color2 = GFX_BROWN,
     .init  = settings_init,

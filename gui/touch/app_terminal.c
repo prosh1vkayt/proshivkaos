@@ -10,6 +10,7 @@
  * написана один раз и не знает ни архитектуры, ни формы экрана.
  */
 #include "touch_app.h"
+#include "icon.h"
 #include "touch_theme.h"
 #include "terminal_app.h"
 #include "hal_input.h"
@@ -70,6 +71,7 @@ static int terminal_wants_keyboard(void) { return 1; }
 const touch_app_t app_terminal = {
     .name  = "TERMINAL",
     .glyph = ">_",
+    .icon  = ICON_TERMINAL + 1,
     .color = GFX_UI_ACCENT,
     .color2 = GFX_UI_ACCENT_DARK,
     .init  = terminal_init,

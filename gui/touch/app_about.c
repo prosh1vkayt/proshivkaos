@@ -17,6 +17,7 @@
  * Заголовок при этом остаётся на месте.
  */
 #include "touch_app.h"
+#include "icon.h"
 #include "touch_theme.h"
 #include "hal.h"
 #include "hal_time.h"
@@ -303,6 +304,7 @@ static int  about_wants_keyboard(void) { return 0; }
 const touch_app_t app_about = {
     .name  = "ABOUT",
     .glyph = "?",
+    .icon  = ICON_INFO + 1,
     .color = GFX_UI_ACCENT3,
     .color2 = GFX_UI_ACCENT3_DARK,
     .init  = about_init,

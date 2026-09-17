@@ -10,6 +10,7 @@
  * уехать за свои границы.
  */
 #include "touch_app.h"
+#include "icon.h"
 #include "touch_theme.h"
 #include "hal_input.h"
 #include "ramfs.h"
@@ -80,11 +81,11 @@ static void draw_header(const char *title) {
     hal_gfx_fill_rect(g_x, g_y, g_w, hh, GFX_UI_SURFACE_2);
     hal_gfx_fill_rect(g_x, g_y + hh - 1, g_w, 1, GFX_UI_DIVIDER);
 
-    /* Кнопка "наверх" слева */
+    /* Кнопка "наверх" слева — стрелка, как в заголовках остальных экранов. */
     int bw = TM.touch;
-    touch_draw_button(g_x + TM.pad / 2, g_y + TM.pad / 2,
-                       bw - TM.pad, hh - TM.pad, "<", 0,
-                       GFX_UI_SURFACE_2, GFX_UI_SURFACE);
+    int is = hh * 55 / 100;
+    icon_draw(ICON_ARROW_BACK, g_x + (bw - is) / 2, g_y + (hh - is) / 2, is,
+              hal_gfx_palette_rgb(GFX_UI_TEXT));
 
     hal_gfx_draw_string_scaled(g_x + bw + TM.pad, g_y + (hh - FONT_H * TM.scale_small) / 2,
                                 title, GFX_UI_TEXT, TM.scale_small);
@@ -120,14 +121,12 @@ static void render_list(void) {
         if (g_pressed_row == i)
             hal_gfx_fill_rect(g_x, ry, g_w, g_row_h, GFX_UI_SURFACE_2);
 
-        /* Метка типа: папка — заполненный квадрат акцентом, файл — рамка. */
-        int m = TM.touch / 3;
+        /* Иконка типа: папка акцентом, документ приглушённо. */
+        int m = TM.touch / 2;
         int mx = g_x + TM.pad * 2;
         int my = ry + (g_row_h - m) / 2;
-        if (files[i]->is_dir)
-            hal_gfx_fill_rounded_rect(mx, my, m, m, GFX_UI_ACCENT, 2);
-        else
-            hal_gfx_draw_rounded_rect(mx, my, m, m, GFX_UI_TEXT_DIM, 2);
+        icon_draw(files[i]->is_dir ? ICON_FOLDER : ICON_FILE, mx, my, m,
+                  hal_gfx_palette_rgb(files[i]->is_dir ? GFX_UI_ACCENT : GFX_UI_TEXT_DIM));
 
         hal_gfx_draw_string_scaled(mx + m + TM.pad * 2,
                                     ry + (g_row_h - FONT_H * TM.scale_small) / 2,
@@ -276,6 +275,7 @@ static int  files_wants_keyboard(void) { return 0; }
 const touch_app_t app_files = {
     .name  = "FILES",
     .glyph = "/",
+    .icon  = ICON_FOLDER + 1,
     .color = GFX_UI_OK,
     .color2 = GFX_HILL_DARK,
     .init  = files_init,

@@ -57,7 +57,8 @@ void touch_draw_button(int x, int y, int w, int h, const char *label,
 
 /* Иконка приложения: скруглённый квадрат с акцентным градиентом и
  * символом-глифом по центру, под ним подпись. */
-void touch_draw_app_icon(int x, int y, int size, const char *glyph,
+/* icon — ICON_* + 1, или 0: тогда внутри рисуется glyph текстом. */
+void touch_draw_app_icon(int x, int y, int size, int icon, const char *glyph,
                           const char *label, uint8_t top, uint8_t bottom, int pressed);
 
 /* Сегментная полоса-диаграмма, как индикатор занятости хранилища в

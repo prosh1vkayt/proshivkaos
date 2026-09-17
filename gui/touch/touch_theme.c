@@ -1,6 +1,7 @@
 /* gui/touch/touch_theme.c */
 #include "touch_theme.h"
 #include "hal.h"
+#include "icon.h"
 
 touch_metrics_t TM;
 
@@ -70,7 +71,7 @@ void touch_draw_button(int x, int y, int w, int h, const char *label,
     }
 }
 
-void touch_draw_app_icon(int x, int y, int size, const char *glyph,
+void touch_draw_app_icon(int x, int y, int size, int icon, const char *glyph,
                           const char *label, uint8_t color, uint8_t dark, int pressed) {
     int r = size / 4;   /* заметно круглее карточек — так иконка читается
                            как иконка, а не как кусок интерфейса */
@@ -86,7 +87,12 @@ void touch_draw_app_icon(int x, int y, int size, const char *glyph,
     hal_gfx_draw_glossy_button(x, y, size, size, top, bot, GFX_UI_DIVIDER, r);
 
     hal_debug_activity(HAL_ACT_ICON_TEXT);
-    if (glyph) {
+    if (icon > 0) {
+        /* Векторная иконка — чуть больше половины плитки, как в Android. */
+        int is = size * 55 / 100;
+        icon_draw(icon - 1, x + (size - is) / 2, y + (size - is) / 2, is,
+                  hal_gfx_palette_rgb(GFX_UI_TEXT_BRIGHT));
+    } else if (glyph) {
         int gs = TM.scale + 1;
         int gy = y + (size - FONT_H * gs) / 2;
         hal_gfx_draw_string_centered(x, gy, size, glyph, GFX_UI_TEXT, gs);
@@ -135,16 +141,10 @@ void touch_header_back_rect(int x, int y, int *bx, int *by, int *bw, int *bh) {
 int touch_draw_screen_header(int x, int y, int w, const char *title) {
     int h = TM.touch;
 
-    /* Стрелка "назад" — нарисована примитивами: она узнаётся мгновенно,
-       а буква "<" в моноширинном шрифте выглядит как знак меньше. */
-    int cx = x + h / 2;
-    int cy = y + h / 2;
-    int a  = h / 5;
-    for (int i = 0; i <= a; i++) {
-        hal_gfx_fill_rect(cx - a / 2 + i, cy - i, 2, 2, GFX_UI_TEXT);
-        hal_gfx_fill_rect(cx - a / 2 + i, cy + i, 2, 2, GFX_UI_TEXT);
-    }
-    hal_gfx_fill_rect(cx - a / 2, cy, a * 2, 2, GFX_UI_TEXT);
+    /* Стрелка "назад" — векторная иконка Material. */
+    int is = h * 55 / 100;
+    icon_draw(ICON_ARROW_BACK, x + (h - is) / 2, y + (h - is) / 2, is,
+              hal_gfx_palette_rgb(GFX_UI_TEXT));
 
     hal_gfx_draw_string_scaled(x + h + TM.pad, y + (h - FONT_H * TM.scale) / 2,
                                 title, GFX_UI_TEXT_BRIGHT, TM.scale);

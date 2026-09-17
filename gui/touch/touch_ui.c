@@ -26,6 +26,7 @@
 #include "hal.h"
 #include "hal_gfx.h"
 #include "gfxfb.h"
+#include "icon.h"
 #include "hal_input.h"
 #include "hal_time.h"
 
@@ -249,27 +250,11 @@ static void nav_button_rect(int index, int *x, int *y, int *w, int *h) {
 /* Значки нарисованы примитивами, а не буквами: стрелка и круг узнаются
  * мгновенно, а слова BACK/HOME на трёх языках читать некогда. */
 static void draw_nav_glyph(int index, int x, int y, int size, uint8_t color) {
-    int cx = x + size / 2;
-    int cy = y + size / 2;
-    int r  = size / 4;
-
-    if (index == NAV_BACK) {
-        /* треугольник влево */
-        for (int i = 0; i < r; i++)
-            hal_gfx_fill_rect(cx - r / 2 + i, cy - i, 2, i * 2 + 1, color);
-    } else if (index == NAV_HOME) {
-        /* кольцо */
-        for (int j = -r; j <= r; j++)
-            for (int i = -r; i <= r; i++) {
-                int d = i * i + j * j;
-                if (d <= r * r && d >= (r - 2) * (r - 2))
-                    hal_gfx_put_pixel(cx + i, cy + j, color);
-            }
-    } else {
-        /* квадрат-контур */
-        hal_gfx_draw_rect(cx - r, cy - r, r * 2, r * 2, color);
-        hal_gfx_draw_rect(cx - r + 1, cy - r + 1, r * 2 - 2, r * 2 - 2, color);
-    }
+    /* Треугольник, круг и квадрат — векторные иконки, как в Android. */
+    static const int icons[NAV_COUNT] = { ICON_NAV_BACK, ICON_NAV_HOME, ICON_NAV_RECENTS };
+    int is = size * 45 / 100;
+    icon_draw(icons[index], x + (size - is) / 2, y + (size - is) / 2, is,
+              hal_gfx_palette_rgb(color));
 }
 
 static void draw_nav_bar(void) {
@@ -344,7 +329,7 @@ static void draw_home(void) {
            отрисовки, а не как "прокрутите ниже". */
         if (y + h + FONT_H * TM.scale_small + TM.pad > ay + ah) continue;
 
-        touch_draw_app_icon(x, y, w, g_apps[i]->glyph, g_apps[i]->name,
+        touch_draw_app_icon(x, y, w, g_apps[i]->icon, g_apps[i]->glyph, g_apps[i]->name,
                              g_apps[i]->color, g_apps[i]->color2,
                              g_pressed_icon == i);
     }
@@ -380,8 +365,14 @@ static void draw_recents(void) {
         hal_gfx_draw_glossy_button(x + TM.pad, y + TM.pad, icon, icon,
                                     g_apps[i]->color, g_apps[i]->color2,
                                     GFX_UI_DIVIDER, icon / 4);
-        hal_gfx_draw_string_centered(x + TM.pad, y + TM.pad + (icon - FONT_H * TM.scale) / 2,
-                                      icon, g_apps[i]->glyph, GFX_UI_TEXT, TM.scale);
+        if (g_apps[i]->icon > 0) {
+            int is = icon * 55 / 100;
+            icon_draw(g_apps[i]->icon - 1, x + TM.pad + (icon - is) / 2,
+                      y + TM.pad + (icon - is) / 2, is, hal_gfx_palette_rgb(GFX_UI_TEXT_BRIGHT));
+        } else {
+            hal_gfx_draw_string_centered(x + TM.pad, y + TM.pad + (icon - FONT_H * TM.scale) / 2,
+                                          icon, g_apps[i]->glyph, GFX_UI_TEXT, TM.scale);
+        }
 
         hal_gfx_draw_string_scaled(x + TM.pad * 2 + icon,
                                     y + (h - FONT_H * TM.scale_small) / 2,
