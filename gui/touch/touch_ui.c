@@ -292,6 +292,12 @@ static void icon_rect(int index, int *x, int *y, int *w, int *h) {
     *y = grid_top + row * (TM.icon + TM.gap + FONT_H * TM.scale_small + TM.pad);
 }
 
+/* Какая минута нарисована на больших часах рабочего стола. Строка
+   состояния обновляется раз в секунду сама, а большие часы — только с
+   рабочим столом целиком, и без этой отметки они стояли на минуте, в
+   которую стол открыли. */
+static int g_home_minute = -1;
+
 static void draw_home(void) {
     int ax, ay, aw, ah;
     touch_theme_content_rect(&ax, &ay, &aw, &ah);
@@ -300,6 +306,8 @@ static void draw_home(void) {
     hal_debug_activity(HAL_ACT_DRAW_CLOCK);
     int year, month, day, hour, min, sec;
     hal_time_rtc(&year, &month, &day, &hour, &min, &sec);
+
+    g_home_minute = hour * 60 + min;
 
     char buf[24], num[12];
     int pos = touch_strcat(buf, 0, sizeof(buf), touch_itoa(hour, num, 2));
@@ -893,6 +901,13 @@ void touch_main(void) {
         if (now - g_last_render_ms >= 1000) {
             g_last_render_ms = now;
             need_redraw(R_STATUS);
+
+            if (g_screen == SCREEN_HOME) {
+                int year, month, day, hour, min, sec;
+                hal_time_rtc(&year, &month, &day, &hour, &min, &sec);
+                if (hour * 60 + min != g_home_minute)
+                    need_redraw(R_ALL);     /* стол целиком — около 16 мс раз в минуту */
+            }
         }
 
         if (!g_redraw) {
