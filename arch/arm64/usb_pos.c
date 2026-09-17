@@ -277,6 +277,18 @@ static void do_arg_command(void) {
         hal_input_inject_key(g_arg[0]);
     else if (g_arg_cmd == 't')
         hal_input_inject_tap((g_arg[0] << 8) | g_arg[1], (g_arg[2] << 8) | g_arg[3]);
+#ifdef CONFIG_FIRMWARE
+    else if (g_arg_cmd == 'l') {
+        /* POSl 1 — процессор Wi-Fi, 2 — zap-шейдер GPU, 3 — каналы SMD. */
+        extern int pil_start_wifi(void), pil_start_gpu_zap(void);
+        extern void pil_list_smd_channels(void);
+        extern void pil_status(void);
+        if (g_arg[0] == 1) pil_start_wifi();
+        else if (g_arg[0] == 2) pil_start_gpu_zap();
+        else if (g_arg[0] == 4) pil_status();
+        else pil_list_smd_channels();
+    }
+#endif
     else if (g_arg_cmd == 'u') {
         /* POSu <UNIX:4> <пояс в минутах:2, со знаком> — старший байт первым. */
         uint32_t unix_utc = ((uint32_t)g_arg[0] << 24) | ((uint32_t)g_arg[1] << 16) |
@@ -512,7 +524,7 @@ void usb_pos_received(const uint8_t *data, int len) {
         /* Последовательность набрана — эта буква может быть опасной. */
         g_magic_pos = 0;
 
-        if (c == 'k' || c == 't' || c == 'f' || c == 'u') {
+        if (c == 'k' || c == 't' || c == 'f' || c == 'u' || c == 'l') {
             g_arg_cmd = c;
             g_arg_have = 0;
             g_arg_need = (c == 't') ? 4 : (c == 'u') ? 6 : 1;

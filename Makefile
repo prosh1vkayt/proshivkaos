@@ -308,6 +308,9 @@ else
   ifneq ($(call cfg,CPUFREQ_MSM8953),)
     ARCH_BASE_SOURCES += arch/arm64/cpufreq_msm8953.c
   endif
+  ifneq ($(call cfg,FIRMWARE),)
+    ARCH_BASE_SOURCES += arch/arm64/firmware.c arch/arm64/pil.c
+  endif
 
   BOOT_ASM :=
   BOOT_S   := arch/arm64/boot.S arch/arm64/vectors.S
@@ -353,6 +356,28 @@ uniq = $(if $(1),$(firstword $(1)) $(call uniq,$(filter-out $(firstword $(1)),$(
 TEXT_OBJ  := $(call uniq,$(call obj_of,$(TEXT_SOURCES) $(TEXT_ASM) $(BOOT_S)))
 GUI_OBJ   := $(call uniq,$(call obj_of,$(GUI_SOURCES) $(BOOT_ASM) $(BOOT_S)))
 TOUCH_OBJ := $(call uniq,$(call obj_of,$(TOUCH_SOURCES) $(BOOT_ASM) $(BOOT_S)))
+
+# ---- Прошивки сопроцессоров (Wi-Fi, zap-шейдер GPU) ----
+# Лежат локально, не в репозитории: они подписаны под устройство и сняты с
+# телефона. Каталога нет — вшивается пустой блок, и система собирается
+# без них. Пересборка блока — когда меняется любой файл в каталоге.
+ifneq ($(call cfg,FIRMWARE),)
+  FIRMWARE_DIR  ?= $(HOME)/mido/firmware
+  FIRMWARE_BLOB := $(BUILD)/firmware.bin
+  FIRMWARE_OBJ  := $(OBJDIR)/fwblob.o
+  FIRMWARE_DEPS := $(shell find $(FIRMWARE_DIR) -type f 2>/dev/null)
+
+$(FIRMWARE_BLOB): tools/fwpack.py $(FIRMWARE_DEPS)
+	@mkdir -p $(dir $@)
+	python3 tools/fwpack.py $(FIRMWARE_DIR) $@
+
+$(FIRMWARE_OBJ): $(FIRMWARE_BLOB)
+	@mkdir -p $(dir $@)
+	printf '.section .rodata.fw, "a"\n.balign 8\n.global _fw_blob_start\n_fw_blob_start:\n.incbin "%s"\n' $(abspath $(FIRMWARE_BLOB)) > $(BUILD)/fwblob.S
+	$(CC) -c $(BUILD)/fwblob.S -o $@
+
+  TOUCH_OBJ += $(FIRMWARE_OBJ)
+endif
 
 KERNEL_ELF  := $(BUILD)/kernel.elf
 GUI_ELF     := $(BUILD)/kernel_gui.elf

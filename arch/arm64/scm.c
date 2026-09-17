@@ -56,6 +56,21 @@ __asm__(
     "    ret\n"
 );
 
+/* Вызов с явным описанием аргументов (типы — по QCOM_SCM_ARGS ядра):
+   x2..x4 — первые три аргумента. */
+int64_t scm_call_args(uint32_t svc, uint32_t cmd, uint64_t arginfo,
+                      uint64_t a0, uint64_t a1, uint64_t a2, uint64_t *res0) {
+    uint64_t out[3] = { 0, 0, 0 };
+    uint64_t fn = SCM_SIP_FNID(svc, cmd) | SCM_SMC64;
+    int64_t r;
+    int tries = 0;
+    do {
+        r = (int64_t)scm_smc_raw(fn, arginfo, a0, a1, a2, 0, out);
+    } while (r == SCM_INTERRUPTED && ++tries < 64);
+    if (res0) *res0 = out[0];
+    return r;
+}
+
 static int64_t scm_call(uint32_t svc, uint32_t cmd, int nargs,
                         uint64_t a0, uint64_t a1, uint64_t *res) {
     uint64_t out[3] = { 0, 0, 0 };

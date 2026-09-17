@@ -83,6 +83,35 @@ void mmu_secondary_regs(uint64_t *ttbr, uint64_t *tcr, uint64_t *mair, uint64_t 
 }
 static uint64_t g_l2[4][L2_ENTRIES] __attribute__((aligned(4096)));
 
+/* Временное окно в обычную память — для загрузки прошивок сопроцессоров в
+   отведённые им области. Трогает только блоки, которые в карте пусты, и
+   только их же убирает. После убирания — сброс TLB: область вот-вот
+   закроет TrustZone, и устаревшая трансляция к ней недопустима. */
+static uint8_t g_window_blocks[4][L2_ENTRIES];
+
+void mmu_map_ram_window(uint64_t pa, uint64_t size, int on) {
+    const uint64_t blk = 1ULL << L2_BLOCK_SHIFT;
+    uint64_t lo = pa & ~(blk - 1), hi = (pa + size + blk - 1) & ~(blk - 1);
+    for (uint64_t b = lo; b < hi; b += blk) {
+        int gib = (int)(b >> 30), i = (int)((b >> L2_BLOCK_SHIFT) & (L2_ENTRIES - 1));
+        if (gib >= 4) continue;
+        if (on) {
+            if (g_l2[gib][i]) continue;           /* уже отображено — не наше */
+            g_l2[gib][i] = b | DESC_BLOCK | DESC_ATTR(MAIR_IDX_NC) |
+                           DESC_AP_RW_EL1 | DESC_SH_INNER | DESC_AF | DESC_XN;
+            g_window_blocks[gib][i] = 1;
+        } else if (g_window_blocks[gib][i]) {
+            g_l2[gib][i] = 0;
+            g_window_blocks[gib][i] = 0;
+        }
+    }
+    dsb_sy();
+    __asm__ volatile ("tlbi vmalle1");
+    __asm__ volatile ("dsb nsh");
+    isb();
+}
+
+
 #ifdef BOARD_HAS_STATIC_FB
 /* Попадает ли блок в диапазон [начало, начало+длина). */
 static int in_range(uint64_t blk, uint64_t start, uint64_t len) {
