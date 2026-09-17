@@ -264,6 +264,16 @@ int rpm_vote_smpa_level(uint32_t id, uint32_t level) {
 
 int rpm_vote_mx_level(uint32_t level) { return rpm_vote_smpa_level(7, level); }
 
+/* Произвольный голос «ресурс, номер, ключ = значение» — для тех, кому
+   отдельная обёртка не нужна (например, буфер кварца радиочипа). */
+int rpm_vote_kv(uint32_t res_type, uint32_t res_id, uint32_t key, uint32_t value) {
+    if (!g_ready) return 0;
+    g_quiet_send = 1;
+    int ok = rpm_request1(res_type, res_id, key, value);
+    g_quiet_send = 0;
+    return ok;
+}
+
 int smd_rpm_init(void) {
     g_ready = 0;
 

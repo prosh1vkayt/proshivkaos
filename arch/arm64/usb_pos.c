@@ -286,9 +286,38 @@ static void do_arg_command(void) {
         if (g_arg[0] == 1) pil_start_wifi();
         else if (g_arg[0] == 2) pil_start_gpu_zap();
         else if (g_arg[0] == 4) pil_status();
+        else if (g_arg[0] == 5) { extern void pil_smsm_apps_ready(void); pil_smsm_apps_ready(); }
         else pil_list_smd_channels();
     }
 #endif
+    else if (g_arg_cmd == 'r' || g_arg_cmd == 'x') {
+        /* POSr <адрес:4> <слов:1>         прочитать слова регистров
+         * POSx <адрес:4> <значение:4>     записать слово
+         * Адрес — старший байт первым, только ниже ОЗУ (регистры и SMEM):
+         * обращение к неотображённому адресу — падение, а не ошибка. */
+        uint32_t addr = ((uint32_t)g_arg[0] << 24) | ((uint32_t)g_arg[1] << 16) |
+                        ((uint32_t)g_arg[2] << 8) | g_arg[3];
+        static const char hexd[] = "0123456789ABCDEF";
+        addr &= ~3u;
+        if (g_arg_cmd == 'x') {
+            uint32_t v = ((uint32_t)g_arg[4] << 24) | ((uint32_t)g_arg[5] << 16) |
+                         ((uint32_t)g_arg[6] << 8) | g_arg[7];
+            mmio_write32(addr, v);
+            dsb_sy();
+        }
+        int n = (g_arg_cmd == 'x') ? 1 : (g_arg[4] ? g_arg[4] : 1);
+        for (int i = 0; i < n; i++) {
+            uint32_t a = addr + (uint32_t)i * 4, v = mmio_read32(a);
+            char line[32];
+            int k = 0;
+            line[k++] = 'M'; line[k++] = ' ';
+            for (int b = 28; b >= 0; b -= 4) line[k++] = hexd[(a >> b) & 0xF];
+            line[k++] = ' ';
+            for (int b = 28; b >= 0; b -= 4) line[k++] = hexd[(v >> b) & 0xF];
+            line[k++] = '\n'; line[k] = 0;
+            usb_log_write(line);
+        }
+    }
     else if (g_arg_cmd == 'u') {
         /* POSu <UNIX:4> <пояс в минутах:2, со знаком> — старший байт первым. */
         uint32_t unix_utc = ((uint32_t)g_arg[0] << 24) | ((uint32_t)g_arg[1] << 16) |
@@ -524,10 +553,12 @@ void usb_pos_received(const uint8_t *data, int len) {
         /* Последовательность набрана — эта буква может быть опасной. */
         g_magic_pos = 0;
 
-        if (c == 'k' || c == 't' || c == 'f' || c == 'u' || c == 'l') {
+        if (c == 'k' || c == 't' || c == 'f' || c == 'u' || c == 'l' ||
+            c == 'r' || c == 'x') {
             g_arg_cmd = c;
             g_arg_have = 0;
-            g_arg_need = (c == 't') ? 4 : (c == 'u') ? 6 : 1;
+            g_arg_need = (c == 't') ? 4 : (c == 'u') ? 6 : (c == 'r') ? 5 :
+                         (c == 'x') ? 8 : 1;
             continue;
         }
 

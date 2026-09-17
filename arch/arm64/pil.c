@@ -26,6 +26,7 @@ int64_t scm_call_args(uint32_t svc, uint32_t cmd, uint64_t arginfo,
                       uint64_t a0, uint64_t a1, uint64_t a2, uint64_t *res0);
 void mmu_map_ram_window(uint64_t pa, uint64_t size, int on);
 int rpm_vote_smpa_level(uint32_t id, uint32_t level);
+int rpm_vote_kv(uint32_t res_type, uint32_t res_id, uint32_t key, uint32_t value);
 
 #define SVC_PIL              2
 #define PAS_INIT_IMAGE       1
@@ -214,23 +215,42 @@ int pil_boot(const char *fw, uint32_t pas_id, uint64_t mem_phys, uint64_t mem_si
 
 /* Список каналов SMD с их краями — появился ли у Wi-Fi свой. */
 void pil_list_smd_channels(void) {
-    uint32_t sz = 0;
-    uint64_t tbl = smem_item(13, &sz);
-    if (!tbl) { say("PIL: spiska kanalov SMD net\n"); return; }
+    /* Таблиц две: 13 (состояния с 14-го предмета) и 266 (со 138-го). */
+    static const int tbl_id[2] = { 13, 266 }, info_base[2] = { 14, 138 };
     int n = 0;
-    for (int i = 0; i < 64; i++) {
-        uint64_t e = tbl + (uint32_t)i * 32;
-        if (!mmio_read32(e + 28) || !mmio_read8(e)) continue;
-        char name[21];
-        for (int k = 0; k < 20; k++) name[k] = (char)mmio_read8(e + (uint32_t)k);
-        name[20] = 0;
-        uint32_t flags = mmio_read32(e + 24);
-        say("PIL: kanal SMD ");
-        say(name);
-        say(" kray ");
-        early_con_hex32(flags & 0xFF);
-        say("\n");
-        n++;
+    /* Сначала общее оглавление (там каналы к RPM), затем раздел пары
+       «приложения — Wi-Fi» (хост 4). */
+    for (int part = 0; part < 2; part++)
+    for (int t = 0; t < 2; t++) {
+        int host = part ? 4 : -1;
+        uint32_t sz = 0;
+        uint64_t tbl = smem_item_host(host, tbl_id[t], &sz);
+        if (!tbl) { say_hex("PIL: net tablicy kanalov ", (uint64_t)tbl_id[t]); continue; }
+        for (int i = 0; i < 64; i++) {
+            uint64_t e = tbl + (uint32_t)i * 32;
+            if (!mmio_read32(e + 28) || !mmio_read8(e)) continue;
+            char name[21];
+            for (int k = 0; k < 20; k++) name[k] = (char)mmio_read8(e + (uint32_t)k);
+            name[20] = 0;
+            uint32_t flags = mmio_read32(e + 24);
+            uint32_t cid = mmio_read32(e + 20);
+            say("PIL: kanal SMD ");
+            say(name);
+            say(" kray ");
+            early_con_hex32(flags & 0xFF);
+            /* Состояния обеих сторон: 2 — открыт, 0 — закрыт. */
+            uint32_t isz = 0;
+            uint64_t info = smem_item_host(host, info_base[t] + (int)cid, &isz);
+            if (info && isz >= 40) {
+                uint32_t half = isz >= 88 ? 44 : 20;
+                say(" sostoyaniya ");
+                early_con_hex32(mmio_read32(info));
+                say("/");
+                early_con_hex32(mmio_read32(info + half));
+            }
+            say("\n");
+            n++;
+        }
     }
     say_hex("PIL: kanalov SMD vsego ", (uint64_t)n);
 }
@@ -253,6 +273,30 @@ void pil_status(void) {
     } else {
         smem_item_debug(85);
     }
+    /* SMP2P от Pronto (предмет 451): его «slave-kernel» — бит 0 фатальная
+       ошибка, 1 готов, 2 передача питания, 3 подтверждение останова. */
+    uint64_t p2p = smem_item_host(4, 451, &sz);
+    if (p2p && sz >= 24) {
+        say_hex("PIL: SMP2P Pronto magic ", mmio_read32(p2p));
+        say_hex("PIL:   versiya/pid ", mmio_read32(p2p + 4));
+        uint32_t valid = mmio_read16(p2p + 14);
+        say_hex("PIL:   zapisey ", valid);
+        for (uint32_t i = 0; i < valid && i < 16; i++) {
+            uint64_t e = p2p + 20 + i * 20;
+            char name[17];
+            for (int k = 0; k < 16; k++) name[k] = (char)mmio_read8(e + (uint32_t)k);
+            name[16] = 0;
+            say("PIL:   "); say(name); say(" = ");
+            early_con_hex32(mmio_read32(e + 16)); say("\n");
+        }
+    } else {
+        say("PIL: SMP2P ot Pronto net (predmet 451)\n");
+        smem_item_debug(451);
+    }
+    /* Ожидающие прерывания SPI 142..149 (номера GIC 174..181): SMD, SMP2P,
+       SMSM Wi-Fi, 145/146 — WLAN TX/RX, 149 — сторожевой таймер Pronto.
+       Флаг «ожидает» ставится фронтом и без разрешения прерывания. */
+    say_hex("PIL: GIC ozhidayut 160-191 ", mmio_read32(0x0B000000ull + 0x214));
     uint64_t reason = smem_item(422, &sz);
     if (reason && sz) {
         char buf[81];
@@ -270,6 +314,67 @@ void pil_status(void) {
     }
 }
 
+/* Рукопожатие SMSM со стороны приложений: «инициализированы, SMD готов,
+   работаем» — и сигнал процессору Wi-Fi (бит 19 регистра межпроцессорных
+   сигналов, qcom,smsm-wcnss в дереве). Без этого сопроцессоры не знают,
+   что с ними есть кому говорить. */
+#define SMSM_INIT      0x00000001u
+#define SMSM_SMDINIT   0x00000008u
+#define SMSM_RPCINIT   0x00000020u
+#define SMSM_RUN       0x00000100u
+#define IPC_SMSM_WCNSS 0x00080000u
+#define IPC_SMD_WCNSS  0x00020000u
+
+void pil_smsm_apps_ready(void) {
+    uint32_t sz = 0;
+    uint64_t smsm = smem_item(85, &sz);
+    if (!smsm || sz < 4) { say("PIL: SMSM eshchyo net\n"); return; }
+    uint32_t v = mmio_read32(smsm);
+    v |= SMSM_INIT | SMSM_SMDINIT | SMSM_RPCINIT | SMSM_RUN;
+    mmio_write32(smsm, v);
+    dsb_sy();
+    mmio_write32(BOARD_SMD_IPC_REG, IPC_SMSM_WCNSS);
+    mmio_write32(BOARD_SMD_IPC_REG, IPC_SMD_WCNSS);
+    say_hex("PIL: SMSM prilozheniy teper ", mmio_read32(smsm));
+}
+
+/* НАША ПОЛОВИНА SMP2P.
+ *
+ * SMP2P — тридцатидвухбитные «флажки» между парой процессоров. Каждая
+ * сторона пишет только в свой предмет SMEM: приложения к Wi-Fi — 431,
+ * Wi-Fi к приложениям — 451. Через эти флажки Pronto сообщает «готов»,
+ * «упал», а мы просим его остановиться.
+ *
+ * В Linux драйвер заводит свой предмет при загрузке, задолго до старта
+ * Pronto. Прошивка на это рассчитывает: без нашей половины её SSR-модуль
+ * ждёт («SMP2P not ready» в строках прошивки), и загрузка дальше не идёт —
+ * каналы SMD так и не появляются. Делаем как mainline: заголовок, одна
+ * запись «master-kernel», версия — последней, затем сигнал (бит 18). */
+#define SMP2P_MAGIC        0x504D5324u
+#define SMP2P_ITEM_BYTES   (20u + 16u * 20u)
+#define IPC_SMP2P_WCNSS    0x00040000u
+
+void pil_smp2p_out(void) {
+    uint64_t out = smem_alloc_host(4, 431, SMP2P_ITEM_BYTES);
+    if (!out) { say("PIL: predmet SMP2P 431 ne vydelen\n"); return; }
+    if (mmio_read32(out) == SMP2P_MAGIC) { say("PIL: SMP2P 431 uzhe est\n"); return; }
+    mmio_write32(out + 4, 0);                   /* версия 0 — ещё не готово */
+    mmio_write16(out + 8, 0);                   /* наш номер: приложения    */
+    mmio_write16(out + 10, 4);                  /* их номер: Wi-Fi          */
+    mmio_write16(out + 12, 16);
+    mmio_write16(out + 14, 1);
+    mmio_write32(out + 16, 0);
+    static const char name[] = "master-kernel";
+    for (uint32_t k = 0; k < sizeof(name); k++) mmio_write8(out + 20 + k, (uint8_t)name[k]);
+    mmio_write32(out + 36, 0);
+    mmio_write32(out, SMP2P_MAGIC);
+    dsb_sy();
+    mmio_write32(out + 4, 1);                   /* версия 1, без особенностей */
+    dsb_sy();
+    mmio_write32(BOARD_SMD_IPC_REG, IPC_SMP2P_WCNSS);
+    say("PIL: nasha polovina SMP2P (431) zavedena\n");
+}
+
 /* Питание радио — как wcnss_wlan_power() в ядре: память и ядро
    кристалла уровнями, выводы 1,8 В, затем радиочасть Iris. */
 static void wcnss_power_on(void) {
@@ -283,9 +388,113 @@ static void wcnss_power_on(void) {
     say("PIL: pitanie radio podano\n");
 }
 
+/* ШЕСТЬ ПРОВОДОВ К IRIS И ЕГО КВАРЦ.
+ *
+ * Pronto — только цифровая половина Wi-Fi. Радио живёт в отдельной
+ * микросхеме Iris (WCN36xx), и говорят они по пятипроводной шине на
+ * выводах 76–80. Пока выводы остаются обычными GPIO, Pronto стучится в
+ * пустоту: прошивка встаёт на опросе радио и до своих каналов SMD так и
+ * не доходит. Дерево (wcnss_default) отдаёт их функции 1, 6 мА, подтяжка
+ * вверх.
+ *
+ * Кварц для Iris даёт буфер rf_clk2 сопроцессора питания (ресурс "clka"
+ * номер 5), а режим кварца — 19,2 или 48 МГц — прошивка узнаёт из
+ * регистра PMU Pronto. Ядро определяет его само, прочитав у Iris
+ * идентификатор (qcom,has-autodetect-xo), — так и делаем. */
+#define PRONTO_PMU            0x0A21B000ull
+#define PMU_CFG               (PRONTO_PMU + 0x1004)
+#define PMU_SPARE             (PRONTO_PMU + 0x1088)
+#define PMU_IRIS_READ         (PRONTO_PMU + 0x1134)
+#define PMU_XO_CFG            (1u << 3)
+#define PMU_XO_EN             (1u << 4)
+#define PMU_BUS_MUX_TOP       (1u << 5)
+#define PMU_XO_CFG_STS        (1u << 6)
+#define PMU_IRIS_RESET        (1u << 7)
+#define PMU_IRIS_RESET_STS    (1u << 8)
+#define PMU_IRIS_READ_BIT     (1u << 9)
+#define PMU_IRIS_READ_STS     (1u << 10)
+#define PMU_XO_MODE_MASK      (3u << 1)
+#define PMU_XO_MODE_48        (3u << 1)
+#define SPARE_NVBIN_DLND      (1u << 25)
+
+static int pmu_wait_clear(uint32_t bit) {
+    for (int i = 0; i < 2000; i++) {
+        if (!(mmio_read32(PMU_CFG) & bit)) return 1;
+        hal_time_delay_us(50);
+    }
+    say_hex("PIL: PMU zavis na bite ", bit);
+    return 0;
+}
+
+static void iris_reset(uint32_t reg) {
+    mmio_write32(PMU_CFG, reg | PMU_IRIS_RESET);
+    pmu_wait_clear(PMU_IRIS_RESET_STS);
+    mmio_write32(PMU_CFG, reg & ~PMU_IRIS_RESET);
+}
+
+static int iris_id_valid(uint32_t v) {
+    switch ((v >> 16) & 0xFFFF) {
+    case 0x0200: case 0x0300: case 0x0400:      /* WCN3660, 3660A, 3660B/3680 */
+    case 0x5111: case 0x5112:                   /* WCN3620, 3620A */
+    case 0x9101: case 0x9110:                   /* WCN3610 */
+        return 1;
+    }
+    return 0;
+}
+
+static void wcnss_iris_on(void) {
+    for (int g = 76; g <= 80; g++) tlmm_gpio_func(g, 1, 6, 3);
+    int rf = rpm_vote_kv(0x616B6C63u /* "clka" */, 5, 0x6E657773u /* "swen" */, 1);
+    say(rf ? "PIL: vyvody 76-80 otdany Iris, kvarc rf_clk2 vklyuchen\n"
+           : "PIL: golos za rf_clk2 NE USHEL\n");
+    hal_time_delay_ms(5);
+
+    mmio_write32(PMU_SPARE, mmio_read32(PMU_SPARE) | SPARE_NVBIN_DLND);
+
+    mmio_write32(PMU_CFG, 0);
+    uint32_t reg = mmio_read32(PMU_CFG) | PMU_BUS_MUX_TOP | PMU_XO_EN;
+    mmio_write32(PMU_CFG, reg);
+
+    uint32_t id = mmio_read32(PMU_IRIS_READ);
+    iris_reset(reg);
+    int valid = 0;
+    for (int i = 0; i < 6; i++) {
+        mmio_write32(PMU_IRIS_READ, (id & 0xFFFF) | 0x04);  /* регистр 4: идентификатор */
+        reg = mmio_read32(PMU_CFG) | PMU_IRIS_READ_BIT;
+        mmio_write32(PMU_CFG, reg);
+        pmu_wait_clear(PMU_IRIS_READ_STS);
+        id = mmio_read32(PMU_IRIS_READ);
+        reg &= ~PMU_IRIS_READ_BIT;
+        say_hex("PIL: Iris otvetil ", id);
+        if (iris_id_valid(id)) { valid = 1; break; }
+        mmio_write32(PMU_CFG, reg);
+        iris_reset(reg);
+    }
+
+    reg &= ~PMU_XO_MODE_MASK;
+    /* Старшие два бита ответа — семейство: 0 — WCN3660/3680 на 48 МГц,
+       иначе 19,2. Не ответил — как ядро, берём 48. */
+    int xo48 = !valid || (id >> 30) == 0;
+    if (xo48) reg |= PMU_XO_MODE_48;
+    say(valid ? "PIL: Iris najden, " : "PIL: Iris NE otvechaet, ");
+    say(xo48 ? "kvarc 48 MGc\n" : "kvarc 19.2 MGc\n");
+
+    mmio_write32(PMU_CFG, reg);
+    iris_reset(reg);
+    reg |= PMU_XO_CFG;
+    mmio_write32(PMU_CFG, reg);
+    pmu_wait_clear(PMU_XO_CFG_STS);
+    reg &= ~(PMU_BUS_MUX_TOP | PMU_XO_CFG);
+    mmio_write32(PMU_CFG, reg);
+    hal_time_delay_ms(20);
+    say_hex("PIL: PMU Pronto ", mmio_read32(PMU_CFG));
+}
+
 int pil_start_wifi(void) {
     say("PIL: zapusk processora Wi-Fi (Pronto)\n");
     wcnss_power_on();
+    wcnss_iris_on();
+    pil_smp2p_out();
     return pil_boot("wcnss", 6, 0x8E700000ull, 0x700000ull);
 }
 

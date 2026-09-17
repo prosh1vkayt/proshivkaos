@@ -286,6 +286,9 @@ int  boot_anim_active(void);
  * попросив сопроцессор питания через общую память. */
 int  smem_init(void);
 uint64_t smem_item(int id, uint32_t *size);
+uint64_t smem_item_host(int host, int id, uint32_t *size);
+uint64_t smem_alloc(int id, uint32_t size);
+uint64_t smem_alloc_host(int host, int id, uint32_t size);
 void smem_item_debug(int id);
 
 int  smd_rpm_init(void);
