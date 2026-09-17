@@ -495,7 +495,12 @@ int pil_start_wifi(void) {
     wcnss_power_on();
     wcnss_iris_on();
     pil_smp2p_out();
-    return pil_boot("wcnss", 6, 0x8E700000ull, 0x700000ull);
+    int r = pil_boot("wcnss", 6, 0x8E700000ull, 0x700000ull);
+    if (r == 0) {
+        extern void wcnss_ctrl_start(void);
+        wcnss_ctrl_start();
+    }
+    return r;
 }
 
 int pil_start_gpu_zap(void) {
