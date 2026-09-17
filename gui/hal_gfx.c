@@ -153,9 +153,28 @@ static int clamp_radius(int r, int w, int h) {
 }
 
 /* Сглаженный скруглённый прямоугольник с вертикальным градиентом.
- * hole — прямоугольник, который всё равно будет закрыт сверху (для тени):
- * внутри него смешивать незачем. */
-typedef struct { int x0, y0, x1, y1; } hole_t;
+ *
+ * hole — фигура, которая всё равно будет нарисована сверху непрозрачной
+ * (для тени): под ней смешивать незачем. Задаётся прямоугольником и
+ * радиусом: непрозрачна вся её площадь, кроме квадратов углов. */
+typedef struct { int x0, y0, x1, y1, r; } hole_t;
+
+static void span_minus_hole(int a0, int a1, int yy, uint32_t col, uint32_t alpha,
+                            const hole_t *hole) {
+    if (a1 <= a0) return;
+    if (hole && yy >= hole->y0 && yy < hole->y1) {
+        /* В строках углов фигура закрывает середину, в остальных — всю ширину. */
+        int corner = (yy < hole->y0 + hole->r) || (yy >= hole->y1 - hole->r);
+        int h0 = corner ? hole->x0 + hole->r : hole->x0;
+        int h1 = corner ? hole->x1 - hole->r : hole->x1;
+        int l1 = h0 < a1 ? h0 : a1;
+        if (l1 > a0) gfxfb_blend_span_nodirty(a0, yy, l1 - a0, col, alpha);
+        int r0 = h1 > a0 ? h1 : a0;
+        if (a1 > r0) gfxfb_blend_span_nodirty(r0, yy, a1 - r0, col, alpha);
+        return;
+    }
+    gfxfb_blend_span_nodirty(a0, yy, a1 - a0, col, alpha);
+}
 
 static void rrect_fill(int x, int y, int w, int h, int r,
                        uint32_t top, uint32_t bottom, uint32_t alpha255,
@@ -173,28 +192,28 @@ static void rrect_fill(int x, int y, int w, int h, int r,
             for (int i = 0; i < r; i++) {
                 uint32_t a = (uint32_t)cov[i] * alpha255 / AA_FULL;
                 if (!a) continue;
-                gfxfb_blend_pixel(x + i, yy, col, a);
-                gfxfb_blend_pixel(x + w - 1 - i, yy, col, a);
+                if (hole) {
+                    span_minus_hole(x + i, x + i + 1, yy, col, a, hole);
+                    span_minus_hole(x + w - 1 - i, x + w - i, yy, col, a, hole);
+                } else {
+                    gfxfb_blend_pixel_nodirty(x + i, yy, col, a);
+                    gfxfb_blend_pixel_nodirty(x + w - 1 - i, yy, col, a);
+                }
             }
             mid_x0 = x + r;
             mid_x1 = x + w - r;
         }
 
-        if (hole && yy >= hole->y0 && yy < hole->y1) {
-            int a0 = mid_x0, a1 = hole->x0 < mid_x1 ? hole->x0 : mid_x1;
-            if (a1 > a0) gfxfb_span_rgb(a0, yy, a1 - a0, col, alpha255);
-            int b0 = hole->x1 > mid_x0 ? hole->x1 : mid_x0, b1 = mid_x1;
-            if (b1 > b0) gfxfb_span_rgb(b0, yy, b1 - b0, col, alpha255);
-        } else if (mid_x1 > mid_x0) {
-            gfxfb_span_rgb(mid_x0, yy, mid_x1 - mid_x0, col, alpha255);
-        }
+        span_minus_hole(mid_x0, mid_x1, yy, col, alpha255, hole);
     }
+    gfxfb_mark_dirty(x, y, w, h);
 }
 
 /* Сглаженный контур толщиной в пиксель: покрытие внешней фигуры минус
  * покрытие внутренней, сдвинутой на пиксель внутрь. */
 static void rrect_outline(int x, int y, int w, int h, int r, uint32_t col, uint32_t alpha255) {
     if (w <= 2 || h <= 2) { rrect_fill(x, y, w, h, r, col, col, alpha255, 0); return; }
+    gfxfb_mark_dirty(x, y, w, h);
     r = clamp_radius(r, w, h);
     int ri = r > 0 ? r - 1 : 0;
     uint16_t co[RADIUS_MAX], ci[RADIUS_MAX];
@@ -206,12 +225,12 @@ static void rrect_outline(int x, int y, int w, int h, int r, uint32_t col, uint3
             if (arc_row_coverage(j, h, r, co)) {
                 for (int i = 0; i < r; i++) {
                     uint32_t a = (uint32_t)co[i] * alpha255 / AA_FULL;
-                    gfxfb_blend_pixel(x + i, yy, col, a);
-                    gfxfb_blend_pixel(x + w - 1 - i, yy, col, a);
+                    gfxfb_blend_pixel_nodirty(x + i, yy, col, a);
+                    gfxfb_blend_pixel_nodirty(x + w - 1 - i, yy, col, a);
                 }
-                gfxfb_span_rgb(x + r, yy, w - 2 * r, col, alpha255);
+                gfxfb_blend_span_nodirty(x + r, yy, w - 2 * r, col, alpha255);
             } else {
-                gfxfb_span_rgb(x, yy, w, col, alpha255);
+                gfxfb_blend_span_nodirty(x, yy, w, col, alpha255);
             }
             continue;
         }
@@ -220,8 +239,8 @@ static void rrect_outline(int x, int y, int w, int h, int r, uint32_t col, uint3
         int inner = arc_row_coverage(j - 1, h - 2, ri, ci);
         if (!outer) {
             if (!inner) {
-                gfxfb_blend_pixel(x, yy, col, alpha255);
-                gfxfb_blend_pixel(x + w - 1, yy, col, alpha255);
+                gfxfb_blend_pixel_nodirty(x, yy, col, alpha255);
+                gfxfb_blend_pixel_nodirty(x + w - 1, yy, col, alpha255);
                 continue;
             }
             for (int i = 0; i < r; i++) co[i] = AA_FULL;
@@ -232,8 +251,8 @@ static void rrect_outline(int x, int y, int w, int h, int r, uint32_t col, uint3
             int a = (int)co[i] - in;
             if (a <= 0) continue;
             uint32_t aa = (uint32_t)a * alpha255 / AA_FULL;
-            gfxfb_blend_pixel(x + i, yy, col, aa);
-            gfxfb_blend_pixel(x + w - 1 - i, yy, col, aa);
+            gfxfb_blend_pixel_nodirty(x + i, yy, col, aa);
+            gfxfb_blend_pixel_nodirty(x + w - 1 - i, yy, col, aa);
         }
     }
 }
@@ -271,18 +290,18 @@ void hal_gfx_draw_glossy_button(int x, int y, int w, int h,
 void hal_gfx_drop_shadow(int x, int y, int w, int h, int radius, int depth) {
     if (depth < 1) return;
 
-    /* Мягкая тень: несколько слоёв, каждый шире предыдущего и прозрачнее,
-       сдвинутые вниз. Внутри фигуры смешивать незачем — её нарисуют
-       сверху, поэтому середина пропускается. */
+    /* Мягкая тень: несколько слоёв, каждый шире предыдущего, сдвинутые
+       вниз. Под самой фигурой смешивать незачем — её нарисуют сверху
+       непрозрачной, — поэтому пропускается вся её площадь, кроме углов. */
     uint32_t col = pal(GFX_UI_SHADOW);
-    int layers = depth * 2;
+    int layers = depth + 1;
     int r = clamp_radius(radius, w, h);
-    hole_t hole = { x + r, y + r, x + w - r, y + h - r };
+    hole_t hole = { x, y, x + w, y + h, r };
 
     for (int k = 0; k < layers; k++) {
         int e = layers - k;                    /* насколько шире фигуры */
         rrect_fill(x - e + 1, y - e + 1 + depth, w + 2 * e - 2, h + 2 * e - 2,
-                   radius + e, col, col, 90 / layers + 6, &hole);
+                   radius + e, col, col, 120 / layers + 8, &hole);
     }
 }
 

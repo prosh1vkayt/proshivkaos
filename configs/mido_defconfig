@@ -52,3 +52,6 @@ CONFIG_USB_DWC3=y
 CONFIG_SCM=y
 # Частота ядер: загрузчик оставляет 800 МГц (см. arch/arm64/cpufreq_msm8953.c).
 CONFIG_CPUFREQ_MSM8953=y
+# Остальные ядра через PSCI (arch/arm64/smp.c). Выключено, пока не проверено
+# на телефоне: запуск ядер идёт через TrustZone и меняет старт системы.
+# CONFIG_SMP=y

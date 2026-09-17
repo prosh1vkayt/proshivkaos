@@ -72,6 +72,15 @@
 /* Таблицы трансляции. Выравнивание на 4 КиБ — требование архитектуры
  * (младшие биты адреса таблицы под сам адрес не отводятся). */
 static uint64_t g_l1_table[4] __attribute__((aligned(4096)));
+
+/* Значения регистров MMU — для остальных ядер: они включают трансляцию
+   теми же таблицами (см. smp.c). */
+static uint64_t g_reg_tcr, g_reg_mair, g_reg_sctlr;
+
+void mmu_secondary_regs(uint64_t *ttbr, uint64_t *tcr, uint64_t *mair, uint64_t *sctlr) {
+    *ttbr = (uint64_t)(uintptr_t)g_l1_table;
+    *tcr = g_reg_tcr; *mair = g_reg_mair; *sctlr = g_reg_sctlr;
+}
 static uint64_t g_l2[4][L2_ENTRIES] __attribute__((aligned(4096)));
 
 #ifdef BOARD_HAS_STATIC_FB
@@ -286,6 +295,7 @@ void mmu_init(const void *dtb) {
                    | (1ULL << 0)     /* M — включить MMU              */
                    | (1ULL << 2)     /* C — включить кэш данных       */
                    | (1ULL << 12);   /* I — включить кэш инструкций   */
+    g_reg_tcr = tcr; g_reg_mair = mair; g_reg_sctlr = sctlr;
     __asm__ volatile ("msr sctlr_el1, %0" :: "r"(sctlr));
     isb();
 

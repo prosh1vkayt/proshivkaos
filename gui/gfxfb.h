@@ -62,6 +62,11 @@ void gfxfb_blit_alpha8(int x, int y, int w, int h, const uint8_t *mask, int stri
 void gfxfb_blit_rgb(int x, int y, int w, int h, const uint32_t *src, int stride);
 uint32_t *gfxfb_backbuffer32(void);
 
+/* Без отметки грязной области — для фигур, которые отмечают её разом. */
+void gfxfb_blend_pixel_nodirty(int x, int y, uint32_t rgb, uint32_t alpha255);
+void gfxfb_blend_span_nodirty(int x, int y, int w, uint32_t rgb, uint32_t alpha255);
+void gfxfb_mark_dirty(int x, int y, int w, int h);
+
 /* Прямоугольник отсечения: пиксели за его пределами молча отбрасываются.
  * Нужен там, где содержимое заведомо больше отведённого места — прокрутка
  * длинного списка, круг, вылезающий за край карточки. Без него каждый

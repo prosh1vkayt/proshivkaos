@@ -98,6 +98,7 @@ void early_con_hex32(uint32_t v);
 #define early_con_puts(s)         do { (void)(s); } while (0)
 #define early_con_color(s, r, g, b) do { (void)(s); (void)(r); (void)(g); (void)(b); } while (0)
 #define early_con_hex(v)          do { (void)(v); } while (0)
+#define early_con_hex32(v)        do { (void)(v); } while (0)
 #define early_con_hex8(v)         do { (void)(v); } while (0)
 #endif
 
@@ -206,6 +207,7 @@ uint16_t pmic_ldo_base(int n);
 void pmic_ldo_dump(int n);
 void pmic_scan(void);
 void pmic_report_apc(void);
+int  pmic_rtc_seconds(uint32_t *out);
 /* Что записала микросхема питания о прошлом запуске: почему включились,
  * почему выключились, был ли тёплый сброс. Переживает перезагрузку. */
 void pmic_report_reset_reasons(void);

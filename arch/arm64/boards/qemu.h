@@ -7,6 +7,7 @@
 #define ARCH_ARM64_BOARD_QEMU_H
 
 #define BOARD_NAME "QEMU VIRT"
+#define BOARD_QEMU_VIRT 1
 
 /* Запасные значения на случай, если device tree недоступен. Под QEMU это
  * почти невозможно (гипервизор всегда передаёт дерево), но пусть будут:

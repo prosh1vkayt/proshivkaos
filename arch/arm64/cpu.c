@@ -325,6 +325,14 @@ void hal_arch_init(void *boot_info) {
     }
 #endif
 
+#ifdef CONFIG_SMP
+    /* Остальные ядра кластера — после частоты: их такт уже на ФАПЧ. */
+    {
+        extern void smp_init(void);
+        smp_init();
+    }
+#endif
+
     ramoops_write("[5] hal_arch_init zavershen\n");
 }
 

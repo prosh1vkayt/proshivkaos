@@ -255,7 +255,8 @@ else
       arch/arm64/uart_pl011.c \
       arch/arm64/uart_msm.c \
       arch/arm64/mmu.c \
-      arch/arm64/timer.c
+      arch/arm64/timer.c \
+      arch/arm64/smp.c
 
   # Постоянный журнал есть не у всякой платы: он пишет в область ОЗУ,
   # которую устройство само исключило из общего пула. У QEMU такой нет.

@@ -19,6 +19,7 @@
 #include "gfxfb.h"
 #include "palette.h"
 #include "hal_time.h"
+#include "hal.h"
 
 __attribute__((weak)) void arch_dcache_clean(const void *addr, size_t len) {
     (void)addr; (void)len;
@@ -38,10 +39,6 @@ static int g_pitch  = 0;
 static int g_format = GFXFB_FMT_PAL8;
 
 static uint32_t g_back[GFXFB_MAX_PIXELS];
-
-/* Строка кадра в обычной памяти: собрать её у себя и перенести словами
- * дешевле, чем писать в память экрана по байту. */
-static uint32_t g_line[(GFXFB_MAX_LINE_BYTES + 3) / 4 + 1];
 
 /* Прямоугольник отсечения. Нулевая ширина означает "отсечения нет". */
 static int g_clip_x = 0, g_clip_y = 0, g_clip_w = 0, g_clip_h = 0;
@@ -245,12 +242,47 @@ void gfxfb_blend_pixel(int x, int y, uint32_t rgb, uint32_t alpha255) {
     dirty_point(x, y);
 }
 
+typedef struct { int x0, x1, y0, y1; uint32_t rgb, a; } fill_job_t;
+
+static void fill_band(void *arg, int part, int parts) {
+    const fill_job_t *f = (const fill_job_t *)arg;
+    int h = f->y1 - f->y0;
+    int a = f->y0 + h * part / parts, b = f->y0 + h * (part + 1) / parts;
+    for (int j = a; j < b; j++)
+        fill32(&g_back[(long)j * g_width + f->x0], f->x1 - f->x0, f->rgb);
+}
+
+/* Для фигур, которые отмечают грязную область сами, один раз на всю фигуру:
+   отмечать её на каждый пиксель края дороже самого смешивания. */
+void gfxfb_blend_pixel_nodirty(int x, int y, uint32_t rgb, uint32_t alpha255) {
+    if (alpha255 == 0 || !point_visible(x, y)) return;
+    uint32_t *p = &g_back[(long)y * g_width + x];
+    *p = (alpha255 >= 255) ? rgb : blend(*p, rgb, alpha256(alpha255));
+}
+
+void gfxfb_blend_span_nodirty(int x, int y, int w, uint32_t rgb, uint32_t alpha255) {
+    if (w <= 0 || alpha255 == 0) return;
+    int x0 = x, y0 = y, x1 = x + w, y1 = y + 1;
+    if (!clip_rect(&x0, &y0, &x1, &y1)) return;
+    uint32_t *p = &g_back[(long)y * g_width];
+    if (alpha255 >= 255) { fill32(p + x0, x1 - x0, rgb); return; }
+    uint32_t a = alpha256(alpha255);
+    for (int i = x0; i < x1; i++) p[i] = blend(p[i], rgb, a);
+}
+
+void gfxfb_mark_dirty(int x, int y, int w, int h) {
+    int x0 = x, y0 = y, x1 = x + w, y1 = y + h;
+    if (!clip_rect(&x0, &y0, &x1, &y1)) return;
+    dirty_rect(x0, y0, x1 - x0, y1 - y0);
+}
+
 void gfxfb_fill_rect_rgb(int x, int y, int w, int h, uint32_t rgb) {
     if (w <= 0 || h <= 0) return;
     int x0 = x, y0 = y, x1 = x + w, y1 = y + h;
     if (!clip_rect(&x0, &y0, &x1, &y1)) return;
-    for (int j = y0; j < y1; j++)
-        fill32(&g_back[(long)j * g_width + x0], x1 - x0, rgb);
+    fill_job_t job = { x0, x1, y0, y1, rgb, 0 };
+    if ((long)(x1 - x0) * (y1 - y0) >= 250000) hal_parallel(fill_band, &job);
+    else fill_band(&job, 0, 1);
     dirty_rect(x0, y0, x1 - x0, y1 - y0);
 }
 
@@ -342,6 +374,60 @@ static void quant_sync(void) {
     }
 }
 
+/* Вывод полосы строк [y0, y1). Полосы независимы — каждая пишет свои
+   строки памяти экрана, — поэтому их считают разные ядра одновременно. */
+static void present_rows_rgb24(int x0, int x1, int y0, int y1) {
+    uint32_t line_words[(GFXFB_MAX_LINE_BYTES + 3) / 4 + 1];
+    uint8_t *line = (uint8_t *)line_words;
+    int span  = x1 - x0;
+    int bytes = span * 3;
+    int words = bytes >> 2;
+
+    for (int y = y0; y < y1; y++) {
+        const uint32_t *src = &g_back[(long)y * g_width + x0];
+        uint8_t *d = line;
+        for (int x = 0; x < span; x++, d += 3) {
+            uint32_t v = src[x];
+            d[0] = (uint8_t)v; d[1] = (uint8_t)(v >> 8); d[2] = (uint8_t)(v >> 16);
+        }
+
+        volatile uint8_t *dst = g_fb + (long)y * g_pitch + (long)x0 * 3;
+        if ((((uintptr_t)dst) & 3) == 0) {
+            volatile uint32_t *d32 = (volatile uint32_t *)dst;
+            for (int i = 0; i < words; i++) d32[i] = line_words[i];
+            for (int i = words << 2; i < bytes; i++) dst[i] = line[i];
+        } else {
+            for (int i = 0; i < bytes; i++) dst[i] = line[i];
+        }
+    }
+}
+
+typedef struct { int x0, x1, y0, y1; } band_job_t;
+
+static void band_bounds(const band_job_t *j, int part, int parts, int *a, int *b) {
+    int h = j->y1 - j->y0;
+    *a = j->y0 + h * part / parts;
+    *b = j->y0 + h * (part + 1) / parts;
+}
+
+static void present_band(void *arg, int part, int parts) {
+    const band_job_t *j = (const band_job_t *)arg;
+    int a, b;
+    band_bounds(j, part, parts, &a, &b);
+    present_rows_rgb24(j->x0, j->x1, a, b);
+}
+
+static void present_band_xrgb(void *arg, int part, int parts) {
+    const band_job_t *j = (const band_job_t *)arg;
+    int a, b;
+    band_bounds(j, part, parts, &a, &b);
+    for (int y = a; y < b; y++) {
+        volatile uint32_t *dst = (volatile uint32_t *)(g_fb + (long)y * g_pitch) + j->x0;
+        const uint32_t *src = &g_back[(long)y * g_width + j->x0];
+        for (int x = 0; x < j->x1 - j->x0; x++) dst[x] = src[x];
+    }
+}
+
 static void present_rect(int x0, int y0, int x1, int y1) {
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
@@ -353,42 +439,23 @@ static void present_rect(int x0, int y0, int x1, int y1) {
         /* Три байта на пиксель: синий, зелёный, красный — ровно младшие
            три байта значения 0x00RRGGBB. Проверено на живом устройстве.
 
-           Строка собирается в обычной памяти с перекрытием: каждый пиксель
-           пишется четырьмя байтами, лишний ноль затирает следующий пиксель.
-           Начало выравнено на четыре пикселя — тогда перенос в память экрана
-           идёт целыми словами. */
+           Начало выравнено на четыре пикселя — тогда перенос в память
+           экрана идёт целыми словами. Мелкое (буква, подсветка клавиши)
+           выводится сразу, крупное — полосами на всех ядрах. */
         x0 &= ~3;
         x1 = (x1 + 3) & ~3;
         if (x1 > g_width) x1 = g_width;
 
-        int span  = x1 - x0;
-        int bytes = span * 3;
-        int words = bytes >> 2;
-        uint8_t *line = (uint8_t *)g_line;
-
-        for (int y = y0; y < y1; y++) {
-            const uint32_t *src = &g_back[(long)y * g_width + x0];
-            uint8_t *d = line;
-            for (int x = 0; x < span; x++, d += 3) {
-                uint32_t v = src[x];
-                d[0] = (uint8_t)v; d[1] = (uint8_t)(v >> 8); d[2] = (uint8_t)(v >> 16);
-            }
-
-            volatile uint8_t *dst = g_fb + (long)y * g_pitch + (long)x0 * 3;
-            if ((((uintptr_t)dst) & 3) == 0) {
-                volatile uint32_t *d32 = (volatile uint32_t *)dst;
-                for (int i = 0; i < words; i++) d32[i] = g_line[i];
-                for (int i = words << 2; i < bytes; i++) dst[i] = line[i];
-            } else {
-                for (int i = 0; i < bytes; i++) dst[i] = line[i];
-            }
+        if ((long)(x1 - x0) * (y1 - y0) < 60000) {
+            present_rows_rgb24(x0, x1, y0, y1);
+        } else {
+            band_job_t job = { x0, x1, y0, y1 };
+            hal_parallel(present_band, &job);
         }
     } else if (g_format == GFXFB_FMT_XRGB32) {
-        for (int y = y0; y < y1; y++) {
-            volatile uint32_t *dst = (volatile uint32_t *)(g_fb + (long)y * g_pitch) + x0;
-            const uint32_t *src = &g_back[(long)y * g_width + x0];
-            for (int x = 0; x < x1 - x0; x++) dst[x] = src[x];
-        }
+        band_job_t job = { x0, x1, y0, y1 };
+        if ((long)(x1 - x0) * (y1 - y0) < 60000) present_band_xrgb(&job, 0, 1);
+        else hal_parallel(present_band_xrgb, &job);
     } else {
         quant_sync();
         for (int y = y0; y < y1; y++) {

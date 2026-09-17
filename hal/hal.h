@@ -166,6 +166,12 @@ const char *hal_cpu_name(void);
 const char *hal_board_name(void);
 
 void hal_panic(const char *msg) __attribute__((noreturn));
-void hal_cpu_halt(void);          /* остановить CPU до след. прерывания (cli+hlt / wfi) */
+void hal_cpu_halt(void);
+
+/* Разделить работу на все ядра: fn(arg, part, parts) вызывается для
+ * part = 0..parts-1 одновременно на разных ядрах, возврат — когда готовы
+ * все. Где ядро одно, это просто fn(arg, 0, 1). Внутри fn нельзя трогать
+ * общее состояние — только свою долю данных. */
+void hal_parallel(void (*fn)(void *arg, int part, int parts), void *arg);          /* остановить CPU до след. прерывания (cli+hlt / wfi) */
 
 #endif /* PROSHIVKAOS_HAL_H */

@@ -9,3 +9,6 @@ CONFIG_UART_PL011=y
 CONFIG_UART_MSM=y
 
 CONFIG_FB_RAMFB=y
+# Остальные ядра через PSCI (arch/arm64/smp.c). Под эмулятором проверено
+# с -smp 4: кадр совпадает с одноядерным побайтно.
+CONFIG_SMP=y

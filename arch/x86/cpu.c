@@ -60,6 +60,7 @@ void hal_debug_text(const char *s) { (void)s; }
 void hal_debug_progress(void) { }
 void hal_debug_boot_done(void) { }
 void hal_debug_activity(int what) { (void)what; }
+void hal_parallel(void (*fn)(void *arg, int part, int parts), void *arg) { fn(arg, 0, 1); }
 
 void hal_arch_init(void *boot_info) {
     /* На x86 к моменту входа в kmain процессор уже в защищённом режиме с
