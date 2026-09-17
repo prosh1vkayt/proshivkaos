@@ -23,6 +23,7 @@
 Режим dump выходит сам, когда провод замолчал, — на этом и держится
 круг отладки без человека у стола.
 """
+import os
 import sys
 import time
 
@@ -313,7 +314,7 @@ def main():
                 dev.read(EP_IN, 4096, timeout=200)
         except usb.core.USBError:
             pass
-        dev.write(EP_OUT, b"S", timeout=1000)
+        dev.write(EP_OUT, b"F" if os.environ.get("POSDEV_SHOT_FB") else b"S", timeout=1000)
         buf = b""
         t0 = time.time()
         need = None

@@ -351,11 +351,13 @@ static void do_command(uint8_t c) {
         break;
     }
 
-    case 'S': {
-        /* СНИМОК ЭКРАНА. То, что нарисовано в бэкбуфере, уменьшенное втрое
-           с усреднением по квадрату 3x3: 360x640 при полном разрешении
-           телефона, 700 КБ — провод отдаёт это за секунды. Заголовок:
-           "POSSHOT", ширина и высота по два байта. */
+    case 'S':
+    case 'F': {
+        /* СНИМОК ЭКРАНА. S — то, что нарисовано в бэкбуфере; F — то, что
+           на самом деле лежит в памяти экрана (проверка вывода кадра: если
+           полоса не выведена, на F её нет). Уменьшено втрое с усреднением
+           по квадрату 3x3: 360x640 при полном разрешении телефона.
+           Заголовок: "POSSHOT", ширина и высота по два байта. */
         extern uint32_t *gfxfb_backbuffer32(void);
         extern int gfxfb_width(void), gfxfb_height(void);
         static uint8_t shot[7 + 4 + 360 * 640 * 3];
@@ -373,9 +375,17 @@ static void do_command(uint8_t c) {
             for (int x = 0; x < w; x++) {
                 unsigned r = 0, g = 0, b = 0;
                 for (int dy = 0; dy < 3; dy++) {
-                    const uint32_t *row = &fb[(y * 3 + dy) * W + x * 3];
                     for (int dx = 0; dx < 3; dx++) {
-                        uint32_t v = row[dx];
+                        uint32_t v;
+#ifdef BOARD_HAS_STATIC_FB
+                        if (c == 'F') {
+                            const volatile uint8_t *px = (const volatile uint8_t *)
+                                (BOARD_FB_ADDR + (uint64_t)(y * 3 + dy) * BOARD_FB_STRIDE +
+                                 (uint64_t)(x * 3 + dx) * 3);
+                            v = (uint32_t)px[0] | ((uint32_t)px[1] << 8) | ((uint32_t)px[2] << 16);
+                        } else
+#endif
+                            v = fb[(y * 3 + dy) * W + x * 3 + dx];
                         r += (v >> 16) & 255; g += (v >> 8) & 255; b += v & 255;
                     }
                 }
@@ -386,6 +396,12 @@ static void do_command(uint8_t c) {
         g_replay_len = (uint32_t)(d - shot);
         g_replay_pos = 0;
         g_tail = g_head;
+        break;
+    }
+
+    case 'm': {
+        extern void smp_report(void);
+        smp_report();
         break;
     }
 
