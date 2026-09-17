@@ -30,6 +30,25 @@ const uint8_t *fw_find(const char *name, uint32_t *size);
 #define HAL_DOWNLOAD_NV_RSP      56
 #define HAL_FEATURE_CAPS_REQ     175
 #define HAL_FEATURE_CAPS_RSP     176
+#define HAL_INIT_SCAN_REQ        4
+#define HAL_INIT_SCAN_RSP        5
+#define HAL_START_SCAN_REQ       6
+#define HAL_START_SCAN_RSP       7
+#define HAL_END_SCAN_REQ         8
+#define HAL_END_SCAN_RSP         9
+#define HAL_FINISH_SCAN_REQ      10
+#define HAL_FINISH_SCAN_RSP      11
+#define HAL_ADD_STA_SELF_REQ     125
+#define HAL_ADD_STA_SELF_RSP     126
+#define HAL_SYS_MODE_SCAN        2
+
+#define SCAN_DWELL_MS            120
+#define SCAN_LAST_CHANNEL        13
+
+typedef void (*dxe_rx_fn)(const uint8_t *bd, uint32_t size);
+int  wlan_dxe_init(void);
+void wlan_dxe_smsm_init(void);
+int  wlan_dxe_poll(dxe_rx_fn fn);
 
 #define NV_FRAGMENT              3072u
 
@@ -83,7 +102,11 @@ static const struct { uint16_t id; uint32_t val; } g_cfg[] = {
 };
 
 enum { W_IDLE, W_WAIT_CHANNEL, W_OPENING, W_NV, W_NV_WAIT, W_START_SEND,
-       W_START_WAIT, W_CAPS_SEND, W_CAPS_WAIT, W_READY, W_FAILED };
+       W_START_WAIT, W_CAPS_SEND, W_CAPS_WAIT, W_SELF_SEND, W_SELF_WAIT,
+       W_READY, W_FAILED,
+       /* сканирование */
+       S_INIT_SEND, S_INIT_WAIT, S_START_SEND, S_START_WAIT, S_DWELL,
+       S_END_SEND, S_END_WAIT, S_FINISH_SEND, S_FINISH_WAIT };
 
 static smd_chan_t g_ch;
 static int g_st = W_IDLE, g_busy;
@@ -92,6 +115,22 @@ static const uint8_t *g_nv;
 static uint32_t g_nv_size, g_nv_off;
 static uint16_t g_frag;
 static uint8_t g_buf[4096];
+static uint8_t g_scan_ch;
+static uint64_t g_dwell_end;
+static const uint8_t g_mac[6] = { 0x02, 0x50, 0x4F, 0x53, 0x4E, 0x58 };   /* 02:"POSNX" */
+
+/* Найденные сети. */
+#define MAX_NETS 32
+typedef struct {
+    uint8_t bssid[6];
+    char    ssid[33];
+    uint8_t channel;
+    int8_t  rssi;
+    uint8_t secure;
+} wlan_net_t;
+static wlan_net_t g_nets[MAX_NETS];
+static int g_net_count;
+static uint32_t g_frames;
 
 static void say(const char *s) { early_con_puts(s); }
 static void say_dec(uint32_t v) {
@@ -125,6 +164,83 @@ static void say_str(const uint8_t *p, int max) {
     say(s);
 }
 
+static uint32_t be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+/* Кадр из DXE: впереди дескриптор приёма (слова big-endian, поля — как
+   struct wcn36xx_rx_bd), дальше сам кадр 802.11. Нужны маяки и ответы
+   на пробы: из них — имя сети, канал, уровень и есть ли шифрование. */
+static void on_frame(const uint8_t *bd, uint32_t size) {
+    g_frames++;
+    uint32_t w0 = be32(bd), w3 = be32(bd + 12), w4 = be32(bd + 16), w7 = be32(bd + 28);
+    uint32_t hdr_off = (w3 >> 16) & 0xFF, data_off = (w3 >> 7) & 0x1FF;
+    uint32_t hdr_len = (w3 >> 24) & 0xFF, mpdu_len = (w4 >> 16) & 0xFFFF;
+    if (data_off <= hdr_off || mpdu_len < hdr_len || hdr_off < 0x4C ||
+        hdr_off + mpdu_len > size || mpdu_len < 36) return;
+    const uint8_t *f = bd + hdr_off;
+    uint32_t fc = (uint32_t)f[0] | ((uint32_t)f[1] << 8);
+    if ((fc & 0xFC) != 0x80 && (fc & 0xFC) != 0x50) return;       /* маяк / ответ на пробу */
+
+    int rssi = -(100 - (int)((w7 >> 24) & 0xFF));
+    uint8_t ch = (uint8_t)((((w0 >> 11) & 1) << 4) | ((w0 >> 13) & 0xF));
+    uint32_t cap = (uint32_t)f[34] | ((uint32_t)f[35] << 8);
+    char ssid[33] = { 0 };
+    uint8_t secure = (cap & 0x10) ? 1 : 0;
+    for (uint32_t o = 36; o + 2 <= mpdu_len;) {
+        uint8_t id = f[o], l = f[o + 1];
+        if (o + 2 + l > mpdu_len) break;
+        if (id == 0 && l <= 32) { for (int i = 0; i < l; i++) ssid[i] = (char)f[o + 2 + i]; ssid[l] = 0; }
+        else if (id == 3 && l >= 1) ch = f[o + 2];
+        else if (id == 48) secure = 2;                      /* RSN — WPA2 */
+        o += 2u + l;
+    }
+
+    int k = 0;
+    for (; k < g_net_count; k++) {
+        int same = 1;
+        for (int i = 0; i < 6; i++) if (g_nets[k].bssid[i] != f[16 + i]) { same = 0; break; }
+        if (same) break;
+    }
+    if (k == g_net_count) {
+        if (g_net_count >= MAX_NETS) return;
+        g_net_count++;
+        for (int i = 0; i < 6; i++) g_nets[k].bssid[i] = f[16 + i];
+        g_nets[k].rssi = -127;
+    }
+    wlan_net_t *n = &g_nets[k];
+    for (int i = 0; i < 33; i++) n->ssid[i] = ssid[i];
+    n->channel = ch;
+    n->secure = secure;
+    if (rssi > n->rssi) n->rssi = (int8_t)rssi;
+}
+
+static void wlan_scan_report(void) {
+    say("WLAN: skan zavershen, kadrov "); say_dec(g_frames);
+    say(", setey "); say_dec((uint32_t)g_net_count); say("\n");
+    static const char hexd[] = "0123456789abcdef";
+    for (int k = 0; k < g_net_count; k++) {
+        wlan_net_t *n = &g_nets[k];
+        char mac[18];
+        for (int i = 0; i < 6; i++) {
+            mac[i * 3] = hexd[n->bssid[i] >> 4]; mac[i * 3 + 1] = hexd[n->bssid[i] & 15];
+            mac[i * 3 + 2] = i < 5 ? ':' : 0;
+        }
+        say("WLAN:   "); say(n->ssid[0] ? n->ssid : "<skrytaya>");
+        say("  "); say(mac);
+        say("  kanal "); say_dec(n->channel);
+        say("  "); say(n->rssi < 0 ? "-" : ""); say_dec((uint32_t)(n->rssi < 0 ? -n->rssi : n->rssi)); say(" dBm");
+        say(n->secure == 2 ? "  WPA2" : n->secure ? "  zashchishchena" : "  otkrytaya");
+        say("\n");
+    }
+}
+
+void wlan_scan(void) {
+    if (g_st != W_READY) { say("WLAN: radio ne gotovo k skanirovaniyu\n"); return; }
+    g_net_count = 0; g_frames = 0;
+    g_st = S_INIT_SEND;
+}
+
 static void rx(smd_chan_t *ch, const uint8_t *d, uint32_t len) {
     (void)ch;
     if (len < 8) return;
@@ -145,12 +261,38 @@ static void rx(smd_chan_t *ch, const uint8_t *d, uint32_t len) {
         say("WLAN: versiya CRM '"); say_str(d + 16, 64); say("'\n");
         if (status) { fail("START otklonyon"); return; }
         g_st = W_CAPS_SEND;
+    } else if (type == HAL_ADD_STA_SELF_RSP && g_st == W_SELF_WAIT) {
+        uint32_t status = len >= 12 ? get32(d + 8) : 1;
+        say("WLAN: svoya stanciya, otvet "); say_dec(status);
+        say(", indeks "); say_dec(len >= 13 ? d[12] : 0); say("\n");
+        if (status) { fail("ADD_STA_SELF otklonyon"); return; }
+        wlan_dxe_smsm_init();
+        wlan_dxe_init();
+        g_st = W_READY;
+        say("WLAN: HAL zapushchen, radio vklyucheno\n");
+        g_st = S_INIT_SEND;
+    } else if ((type == HAL_INIT_SCAN_RSP && g_st == S_INIT_WAIT) ||
+               (type == HAL_START_SCAN_RSP && g_st == S_START_WAIT) ||
+               (type == HAL_END_SCAN_RSP && g_st == S_END_WAIT) ||
+               (type == HAL_FINISH_SCAN_RSP && g_st == S_FINISH_WAIT)) {
+        uint32_t status = len >= 12 ? get32(d + 8) : 1;
+        if (status) {
+            say("WLAN: skan, soobshchenie "); say_dec(type); say(" otvet "); say_dec(status); say("\n");
+        }
+        if (g_st == S_INIT_WAIT) { g_scan_ch = 1; g_st = S_START_SEND; say("WLAN: skaniruyu kanaly 1-13\n"); }
+        else if (g_st == S_START_WAIT) { g_st = S_DWELL; g_dwell_end = hal_time_ms() + SCAN_DWELL_MS; }
+        else if (g_st == S_END_WAIT) {
+            if (g_scan_ch < SCAN_LAST_CHANNEL) { g_scan_ch++; g_st = S_START_SEND; }
+            else g_st = S_FINISH_SEND;
+        } else {
+            wlan_scan_report();
+            g_st = W_READY;
+        }
     } else if (type == HAL_FEATURE_CAPS_RSP && g_st == W_CAPS_WAIT) {
         say("WLAN: vozmozhnosti prosivki");
         for (uint32_t i = 0; i < 4 && 8 + 4 * (i + 1) <= len; i++) { say(" "); early_con_hex32(get32(d + 8 + 4 * i)); }
         say("\n");
-        g_st = W_READY;
-        say("WLAN: HAL zapushchen, radio vklyucheno\n");
+        g_st = W_SELF_SEND;
     } else {
         say("WLAN: soobshchenie HAL "); say_dec(type); say(" dlina "); say_dec(len); say("\n");
     }
@@ -163,6 +305,7 @@ void wlan_hal_start(void) {
 }
 
 int wlan_hal_ready(void) { return g_st == W_READY; }
+int wlan_scan_count(void) { return g_net_count; }
 
 void hal_wlan_pump(void) {
     if (g_st == W_IDLE || g_st == W_FAILED || g_busy) return;
@@ -173,6 +316,7 @@ void hal_wlan_pump(void) {
     g_busy = 1;
 
     if (g_st != W_WAIT_CHANNEL) smd_chan_poll(&g_ch, rx);
+    wlan_dxe_poll(on_frame);
 
     switch (g_st) {
     case W_WAIT_CHANNEL: {
@@ -241,9 +385,49 @@ void hal_wlan_pump(void) {
         }
         break;
     }
+    case W_SELF_SEND: {
+        hal_hdr(g_buf, HAL_ADD_STA_SELF_REQ, 18);
+        for (int i = 0; i < 6; i++) g_buf[8 + i] = g_mac[i];
+        put32(g_buf + 14, 0);
+        if (smd_chan_send(&g_ch, g_buf, 18)) { g_st = W_SELF_WAIT; g_deadline = now + 10000; }
+        break;
+    }
+    case S_INIT_SEND: {
+        for (int i = 0; i < 48; i++) g_buf[i] = 0;
+        hal_hdr(g_buf, HAL_INIT_SCAN_REQ, 48);
+        put32(g_buf + 8, HAL_SYS_MODE_SCAN);
+        if (smd_chan_send(&g_ch, g_buf, 48)) { g_st = S_INIT_WAIT; g_deadline = now + 10000; }
+        break;
+    }
+    case S_START_SEND:
+        hal_hdr(g_buf, HAL_START_SCAN_REQ, 9);
+        g_buf[8] = g_scan_ch;
+        if (smd_chan_send(&g_ch, g_buf, 9)) { g_st = S_START_WAIT; g_deadline = now + 10000; }
+        break;
+    case S_DWELL:
+        if (now >= g_dwell_end) g_st = S_END_SEND;
+        break;
+    case S_END_SEND:
+        hal_hdr(g_buf, HAL_END_SCAN_REQ, 9);
+        g_buf[8] = g_scan_ch;
+        if (smd_chan_send(&g_ch, g_buf, 9)) { g_st = S_END_WAIT; g_deadline = now + 10000; }
+        break;
+    case S_FINISH_SEND: {
+        for (int i = 0; i < 53; i++) g_buf[i] = 0;
+        hal_hdr(g_buf, HAL_FINISH_SCAN_REQ, 53);
+        put32(g_buf + 8, HAL_SYS_MODE_SCAN);
+        g_buf[12] = 1;                               /* рабочий канал */
+        if (smd_chan_send(&g_ch, g_buf, 53)) { g_st = S_FINISH_WAIT; g_deadline = now + 10000; }
+        break;
+    }
     case W_NV_WAIT:
     case W_START_WAIT:
     case W_CAPS_WAIT:
+    case W_SELF_WAIT:
+    case S_INIT_WAIT:
+    case S_START_WAIT:
+    case S_END_WAIT:
+    case S_FINISH_WAIT:
         if (now > g_deadline) fail("HAL ne otvetil vovremya");
         break;
     default:

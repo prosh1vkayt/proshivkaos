@@ -287,6 +287,7 @@ static void do_arg_command(void) {
         else if (g_arg[0] == 2) pil_start_gpu_zap();
         else if (g_arg[0] == 4) pil_status();
         else if (g_arg[0] == 5) { extern void pil_smsm_apps_ready(void); pil_smsm_apps_ready(); }
+        else if (g_arg[0] == 7) { extern void wlan_scan(void); wlan_scan(); }
         else pil_list_smd_channels();
     }
 #endif
