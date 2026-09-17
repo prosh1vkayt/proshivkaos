@@ -16,6 +16,7 @@
 #include "smd.h"
 
 const uint8_t *fw_find(const char *name, uint32_t *size);
+void wlan_hal_start(void);
 
 #define IPC_SMD_WCNSS          0x00020000u
 #define HOST_WCNSS             4
@@ -84,10 +85,12 @@ static void rx(smd_chan_t *ch, const uint8_t *d, uint32_t len) {
         } else {
             g_st = ST_READY;
             say("WCNSS: radio gotovo\n");
+            wlan_hal_start();
         }
     } else if (type == MSG_CBC_COMPLETE_IND) {
         say("WCNSS: holodnaya kalibrovka zavershena, radio gotovo\n");
         g_st = ST_READY;
+        wlan_hal_start();
     } else {
         say("WCNSS: soobshchenie ");
         early_con_hex32(type);
@@ -171,7 +174,8 @@ void hal_wcnss_pump(void) {
     case ST_CBC_WAIT:
         if (now > g_deadline) {
             say("WCNSS: prosivka ne otvetila vovremya\n");
-            g_st = g_st == ST_CBC_WAIT ? ST_READY : ST_FAILED;
+            if (g_st == ST_CBC_WAIT) { g_st = ST_READY; wlan_hal_start(); }
+            else g_st = ST_FAILED;
         }
         break;
     default:

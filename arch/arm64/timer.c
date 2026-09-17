@@ -150,6 +150,7 @@ __attribute__((weak)) void boot_anim_tick(void) { }
 __attribute__((weak)) void hal_rpm_pump(void) { }
 __attribute__((weak)) void hal_smp_idle(void) { }
 __attribute__((weak)) void hal_wcnss_pump(void) { }
+__attribute__((weak)) void hal_wlan_pump(void) { }
 
 void hal_background_poll(void) {
     hal_watchdog_pet();
@@ -161,6 +162,7 @@ void hal_background_poll(void) {
        непрочитанными с первой же просьбы. */
     hal_rpm_pump();
     hal_wcnss_pump();
+    hal_wlan_pump();
     hal_smp_idle();
     /* Пока идёт загрузка — двигаем полосу. Она рисует один небольшой
        прямоугольник, поэтому её можно звать из любого ожидания. */
