@@ -286,6 +286,20 @@ def main():
         print("otveta net vovse")
         return 1
 
+    if mode == "time":
+        # Настоящее время телефону: секунды UNIX и часовой пояс компьютера.
+        dev = open_device(float(sys.argv[2]) if len(sys.argv) > 2 else 30.0)
+        if dev is None:
+            sys.stderr.write("posdev: устройство не появилось\n")
+            return 2
+        now = int(time.time())
+        tz = int(time.localtime(now).tm_gmtoff // 60)
+        dev.write(EP_OUT, b"POSu" + now.to_bytes(4, "big") + tz.to_bytes(2, "big", signed=True),
+                  timeout=1000)
+        usb.util.dispose_resources(dev)
+        print("posdev: время отдано (UTC%+d:%02d)" % (tz // 60, abs(tz) % 60))
+        return 0
+
     if mode == "shot":
         # Снимок экрана телефона: команда S, в ответ заголовок POSSHOT и
         # пиксели RGB уменьшенного втрое кадра.

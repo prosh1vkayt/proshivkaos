@@ -23,6 +23,8 @@ uint64_t hal_time_us(void) {
     return pit_uptime_ms() * 1000u;
 }
 
+void hal_time_set_wall(uint32_t unix_utc, int tz_minutes) { (void)unix_utc; (void)tz_minutes; }
+
 void hal_time_rtc(int *year, int *month, int *day, int *hour, int *min, int *sec) {
     rtc_read(year, month, day, hour, min, sec);
 }

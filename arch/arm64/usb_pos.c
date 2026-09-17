@@ -265,7 +265,7 @@ static int g_magic_pos = 0;
  *
  * Обе — для нагрузочной проверки: компьютер набирает быстрее человека. */
 static uint8_t g_arg_cmd = 0;
-static uint8_t g_arg[4];
+static uint8_t g_arg[8];
 static int     g_arg_have = 0, g_arg_need = 0;
 
 /* Ввод живёт в hal_input_arm64.c; в сборке без него — заглушки. */
@@ -277,6 +277,14 @@ static void do_arg_command(void) {
         hal_input_inject_key(g_arg[0]);
     else if (g_arg_cmd == 't')
         hal_input_inject_tap((g_arg[0] << 8) | g_arg[1], (g_arg[2] << 8) | g_arg[3]);
+    else if (g_arg_cmd == 'u') {
+        /* POSu <UNIX:4> <пояс в минутах:2, со знаком> — старший байт первым. */
+        uint32_t unix_utc = ((uint32_t)g_arg[0] << 24) | ((uint32_t)g_arg[1] << 16) |
+                            ((uint32_t)g_arg[2] << 8) | g_arg[3];
+        int tz = (int16_t)(((uint16_t)g_arg[4] << 8) | g_arg[5]);
+        hal_time_set_wall(unix_utc, tz);
+        usb_log_write("POS: vremya ustanovleno\n");
+    }
 #ifdef CONFIG_CPUFREQ_MSM8953
     else if (g_arg_cmd == 'f') {
         extern int msm8953_cpu_boost(int idx);
@@ -488,10 +496,10 @@ void usb_pos_received(const uint8_t *data, int len) {
         /* Последовательность набрана — эта буква может быть опасной. */
         g_magic_pos = 0;
 
-        if (c == 'k' || c == 't' || c == 'f') {
+        if (c == 'k' || c == 't' || c == 'f' || c == 'u') {
             g_arg_cmd = c;
             g_arg_have = 0;
-            g_arg_need = (c == 't') ? 4 : 1;
+            g_arg_need = (c == 't') ? 4 : (c == 'u') ? 6 : 1;
             continue;
         }
 

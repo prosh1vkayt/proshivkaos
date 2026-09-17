@@ -26,6 +26,7 @@
 #                          с проверкой, что телефон не упал
 #   posdev bench           замер кадра: отрисовка, вывод, буква в терминале
 #   posdev shot [файл]     снимок экрана телефона в PNG
+#   posdev time            отдать телефону время компьютера (run делает сам)
 #   posdev usb             слушать журнал по проводу (Ctrl-C — выход)
 #   posdev dump            забрать журнал по проводу и выйти самому
 #   posdev reboot [куда]   перезагрузить телефон: bootloader (по умолчанию)
@@ -140,6 +141,10 @@ cmd_run() {
 
     say "posdev: запускаю образ (в память, без записи)"
     fastboot boot "$img" || die "загрузчик отказался принять образ"
+
+    # Настоящего времени у телефона нет: часы PMIC Android писать не может.
+    # Отдаём время компьютера, как только система появится на проводе.
+    python3 "$ROOT/tools/posdev-usb.py" time 30 || say "posdev: время не отдано (провод не поднялся?)"
 }
 
 cmd_log() {
@@ -303,6 +308,7 @@ case "${1:-}" in
     stress) shift; cmd_stress "${1:-60}" "${2:-40}" ;;
     bench)  python3 "$ROOT/tools/posdev-usb.py" bench ;;
     shot)   shift; python3 "$ROOT/tools/posdev-usb.py" shot "${1:-shot.png}" ;;
+    time)   python3 "$ROOT/tools/posdev-usb.py" time ;;
     reboot) shift; cmd_reboot "${1:-bootloader}" ;;
     log)    cmd_log ;;
     cycle)  cmd_cycle ;;

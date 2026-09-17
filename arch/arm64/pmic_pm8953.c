@@ -125,6 +125,25 @@ void pmic_report_apc(void) {
     early_con_puts("\n");
 }
 
+/* Счёт секунд часов PMIC (RTC_RW, 0x6000 на первой ячейке). Настоящего
+ * времени в нём нет — Android их не пишет, — но идут они и через
+ * перезагрузки, и при выключенном телефоне. Четыре байта младшим вперёд;
+ * если младший успел смениться, пока читали остальные, читаем заново. */
+int pmic_rtc_seconds(uint32_t *out) {
+    uint8_t ctrl = 0;
+    if (!spmi_read(0, 0x6046, &ctrl) || !(ctrl & 0x80)) return 0;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        uint8_t b[4], again = 0;
+        for (int i = 0; i < 4; i++)
+            if (!spmi_read(0, (uint16_t)(0x6048 + i), &b[i])) return 0;
+        if (!spmi_read(0, 0x6048, &again)) return 0;
+        if (again != b[0]) continue;
+        *out = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+        return 1;
+    }
+    return 0;
+}
+
 void pmic_scan(void) {
     int total = spmi_channel_count();
     int shown = 0, regs = 0;

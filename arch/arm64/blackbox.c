@@ -68,6 +68,12 @@
 #define BB_CONSOLE_LEN_OFF  (BB_TRAIL_OFF + 4 * BB_TRAIL_LEN)
 #define PREV_TAIL_MAX       8192
 
+/* Настоящее время: смещение от счёта секунд часов PMIC и часовой пояс. */
+#define BB_WALL_MAGIC_OFF   (BB_CONSOLE_LEN_OFF + 4)
+#define BB_WALL_DELTA_OFF   (BB_CONSOLE_LEN_OFF + 8)
+#define BB_WALL_TZ_OFF      (BB_CONSOLE_LEN_OFF + 12)
+#define BB_WALL_MAGIC       0x4C4C4157u   /* "WALL" */
+
 static char     g_prev_tail[PREV_TAIL_MAX];
 static uint32_t g_prev_tail_len = 0;
 
@@ -178,6 +184,32 @@ static void save_prev_tail(void) {
     if (from < now_len) from = now_len;
     for (uint32_t i = from; i < prev_len; i++)
         g_prev_tail[g_prev_tail_len++] = (char)log[i];
+}
+
+void arch_wall_persist(uint32_t unix_utc, int tz_minutes) {
+#ifdef CONFIG_PMIC_SPMI
+    uint32_t rtc;
+    if (!pmic_rtc_seconds(&rtc)) return;
+    mmio_write32(BB_ADDR + BB_WALL_DELTA_OFF, unix_utc - rtc);
+    mmio_write32(BB_ADDR + BB_WALL_TZ_OFF, (uint32_t)tz_minutes);
+    mmio_write32(BB_ADDR + BB_WALL_MAGIC_OFF, BB_WALL_MAGIC);
+#else
+    (void)unix_utc; (void)tz_minutes;
+#endif
+}
+
+int arch_wall_restore(uint32_t *unix_utc, int *tz_minutes) {
+#ifdef CONFIG_PMIC_SPMI
+    uint32_t rtc;
+    if (mmio_read32(BB_ADDR + BB_WALL_MAGIC_OFF) != BB_WALL_MAGIC) return 0;
+    if (!pmic_rtc_seconds(&rtc)) return 0;
+    *unix_utc = rtc + mmio_read32(BB_ADDR + BB_WALL_DELTA_OFF);
+    *tz_minutes = (int)mmio_read32(BB_ADDR + BB_WALL_TZ_OFF);
+    return 1;
+#else
+    (void)unix_utc; (void)tz_minutes;
+    return 0;
+#endif
 }
 
 /* Прочитать запись прошлого запуска и начать свою. */

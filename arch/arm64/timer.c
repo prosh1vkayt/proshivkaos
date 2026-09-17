@@ -191,9 +191,52 @@ static void civil_from_days(int64_t z, int *year, int *month, int *day) {
     *day   = (int)d;
 }
 
+/* НАСТОЯЩЕЕ ВРЕМЯ.
+ *
+ * Хранится как смещение от монотонных часов системы: секунды UNIX минус
+ * время работы. Приходит с компьютера (posdev run отдаёт его сам) и
+ * запоминается платой относительно часов PMIC — те идут и через
+ * перезагрузки, поэтому после нашей же перезагрузки время не теряется. */
+__attribute__((weak)) void arch_wall_persist(uint32_t unix_utc, int tz_minutes) {
+    (void)unix_utc; (void)tz_minutes;
+}
+__attribute__((weak)) int arch_wall_restore(uint32_t *unix_utc, int *tz_minutes) {
+    (void)unix_utc; (void)tz_minutes;
+    return 0;
+}
+
+static int      g_wall_valid = 0;
+static int      g_wall_tried = 0;
+static uint64_t g_wall_base_ms = 0;     /* UNIX-время в мс на момент hal_time_ms() == 0 */
+static int      g_tz_minutes = 0;
+
+static void set_wall(uint32_t unix_utc, int tz_minutes) {
+    g_wall_base_ms = (uint64_t)unix_utc * 1000u - hal_time_ms();
+    g_tz_minutes = tz_minutes;
+    g_wall_valid = 1;
+}
+
+void hal_time_set_wall(uint32_t unix_utc, int tz_minutes) {
+    set_wall(unix_utc, tz_minutes);
+    arch_wall_persist(unix_utc, tz_minutes);
+}
+
 void hal_time_rtc(int *year, int *month, int *day, int *hour, int *min, int *sec) {
-    uint32_t epoch = g_rtc_ok ? mmio_read32(g_rtc_base + RTC_DR)
-                              : (FALLBACK_EPOCH + (uint32_t)(hal_time_ms() / 1000));
+    if (!g_wall_valid && !g_wall_tried) {
+        /* Не при подъёме часов, а при первом вопросе: к этому времени
+           подняты и шина PMIC, и сохраняемая область. */
+        g_wall_tried = 1;
+        uint32_t u; int tz;
+        if (arch_wall_restore(&u, &tz)) set_wall(u, tz);
+    }
+
+    uint32_t epoch;
+    if (g_wall_valid)
+        epoch = (uint32_t)((g_wall_base_ms + hal_time_ms()) / 1000u + (int64_t)g_tz_minutes * 60);
+    else if (g_rtc_ok)
+        epoch = mmio_read32(g_rtc_base + RTC_DR);
+    else
+        epoch = FALLBACK_EPOCH + (uint32_t)(hal_time_ms() / 1000);
 
     int64_t days = (int64_t)(epoch / 86400);
     uint32_t rem = epoch % 86400;
