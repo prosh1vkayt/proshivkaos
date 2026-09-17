@@ -276,6 +276,29 @@ void gfxfb_blend_span_nodirty(int x, int y, int w, uint32_t rgb, uint32_t alpha2
     for (int i = x0; i < x1; i++) p[i] = blend(p[i], rgb, a);
 }
 
+/* Строка пикселей с покрытием: пиксель x + i*dir получает долю cov[i] из
+   cov_full. Отсечение — один раз на строку. */
+void gfxfb_blend_cov_row(int x, int y, const uint16_t *cov, int n, int dir,
+                         uint32_t rgb, uint32_t alpha255, uint32_t cov_full) {
+    if (n <= 0 || alpha255 == 0) return;
+    if (y < 0 || y >= g_height) return;
+    if (g_clip_w > 0 && (y < g_clip_y || y >= g_clip_y + g_clip_h)) return;
+    int lo = 0, hi = g_width;
+    if (g_clip_w > 0) {
+        if (g_clip_x > lo) lo = g_clip_x;
+        if (g_clip_x + g_clip_w < hi) hi = g_clip_x + g_clip_w;
+    }
+    uint32_t *row = &g_back[(long)y * g_width];
+    uint32_t mul = alpha255 + (alpha255 >> 7);          /* 0..256 */
+    for (int i = 0; i < n; i++) {
+        int px = x + i * dir;
+        if (px < lo || px >= hi) continue;
+        uint32_t a = (uint32_t)((uint64_t)cov[i] * mul / cov_full);   /* 0..256 */
+        if (a == 0) continue;
+        row[px] = (a >= 256) ? rgb : blend(row[px], rgb, a);
+    }
+}
+
 void gfxfb_mark_dirty(int x, int y, int w, int h) {
     int x0 = x, y0 = y, x1 = x + w, y1 = y + h;
     if (!clip_rect(&x0, &y0, &x1, &y1)) return;

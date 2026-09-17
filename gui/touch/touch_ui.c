@@ -687,6 +687,72 @@ static void run_bench(void) {
     }
     bench_num("BENCH: tolko vyvod polnogo kadra ", only / N, " mks\n");
 
+    /* Из чего складывается рисование рабочего стола. */
+    {
+        uint64_t t_wall = 0, t_home = 0, t_osk = 0, t_bars = 0, t_icon = 0, t_shadow = 0;
+        for (int i = 0; i < N; i++) {
+            uint64_t t0 = hal_time_us();
+            touch_draw_wallpaper();
+            uint64_t t1 = hal_time_us();
+            draw_home();
+            uint64_t t2 = hal_time_us();
+            osk_render();
+            uint64_t t3 = hal_time_us();
+            draw_status_bar();
+            draw_nav_bar();
+            uint64_t t4 = hal_time_us();
+            int x, y, w, h;
+            icon_rect(0, &x, &y, &w, &h);
+            touch_draw_app_icon(x, y, w, g_apps[0]->icon, g_apps[0]->glyph, g_apps[0]->name,
+                                g_apps[0]->color, g_apps[0]->color2, 0);
+            uint64_t t5 = hal_time_us();
+            hal_gfx_drop_shadow(x, y, w, w, w / 4, 3);
+            uint64_t t6 = hal_time_us();
+            t_wall += t1 - t0; t_home += t2 - t1; t_osk += t3 - t2; t_bars += t4 - t3;
+            t_icon += t5 - t4; t_shadow += t6 - t5;
+        }
+        bench_num("BENCH:  oboi ", t_wall / N, " mks");
+        bench_num(", chasy i ikonki ", t_home / N, " mks");
+        bench_num(", klaviatura ", t_osk / N, " mks");
+        bench_num(", paneli ", t_bars / N, " mks\n");
+        bench_num("BENCH:  odna ikonka ", t_icon / N, " mks");
+        bench_num(", iz nih ten ", t_shadow / N, " mks\n");
+        hal_gfx_present();
+    }
+
+    /* Из чего складывается рисование рабочего стола. */
+    {
+        uint64_t t_wall = 0, t_home = 0, t_osk = 0, t_bars = 0, t_icon = 0, t_shadow = 0;
+        for (int i = 0; i < N; i++) {
+            uint64_t t0 = hal_time_us();
+            touch_draw_wallpaper();
+            uint64_t t1 = hal_time_us();
+            draw_home();
+            uint64_t t2 = hal_time_us();
+            osk_render();
+            uint64_t t3 = hal_time_us();
+            draw_status_bar();
+            draw_nav_bar();
+            uint64_t t4 = hal_time_us();
+            int x, y, w, h;
+            icon_rect(0, &x, &y, &w, &h);
+            touch_draw_app_icon(x, y, w, g_apps[0]->icon, g_apps[0]->glyph, g_apps[0]->name,
+                                g_apps[0]->color, g_apps[0]->color2, 0);
+            uint64_t t5 = hal_time_us();
+            hal_gfx_drop_shadow(x, y, w, w, w / 4, 3);
+            uint64_t t6 = hal_time_us();
+            t_wall += t1 - t0; t_home += t2 - t1; t_osk += t3 - t2; t_bars += t4 - t3;
+            t_icon += t5 - t4; t_shadow += t6 - t5;
+        }
+        bench_num("BENCH:  oboi ", t_wall / N, " mks");
+        bench_num(", chasy i ikonki ", t_home / N, " mks");
+        bench_num(", klaviatura ", t_osk / N, " mks");
+        bench_num(", paneli ", t_bars / N, " mks\n");
+        bench_num("BENCH:  odna ikonka ", t_icon / N, " mks");
+        bench_num(", iz nih ten ", t_shadow / N, " mks\n");
+        hal_gfx_present();
+    }
+
     /* Буква в терминале — путь нажатия клавиши целиком: приложение,
        подсветка клавиатуры не трогается, вывод изменившегося. */
     touch_ui_open("TERMINAL");

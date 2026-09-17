@@ -189,16 +189,16 @@ static void rrect_fill(int x, int y, int w, int h, int r,
         int mid_x0 = x, mid_x1 = x + w;
 
         if (arc_row_coverage(j, h, r, cov)) {
-            for (int i = 0; i < r; i++) {
-                uint32_t a = (uint32_t)cov[i] * alpha255 / AA_FULL;
-                if (!a) continue;
-                if (hole) {
+            if (hole) {
+                for (int i = 0; i < r; i++) {
+                    uint32_t a = (uint32_t)cov[i] * alpha255 / AA_FULL;
+                    if (!a) continue;
                     span_minus_hole(x + i, x + i + 1, yy, col, a, hole);
                     span_minus_hole(x + w - 1 - i, x + w - i, yy, col, a, hole);
-                } else {
-                    gfxfb_blend_pixel_nodirty(x + i, yy, col, a);
-                    gfxfb_blend_pixel_nodirty(x + w - 1 - i, yy, col, a);
                 }
+            } else {
+                gfxfb_blend_cov_row(x, yy, cov, r, +1, col, alpha255, AA_FULL);
+                gfxfb_blend_cov_row(x + w - 1, yy, cov, r, -1, col, alpha255, AA_FULL);
             }
             mid_x0 = x + r;
             mid_x1 = x + w - r;
@@ -287,22 +287,118 @@ void hal_gfx_draw_glossy_button(int x, int y, int w, int h,
     rrect_outline(x, y, w, h, radius, pal(border_color), 160);
 }
 
-void hal_gfx_drop_shadow(int x, int y, int w, int h, int radius, int depth) {
-    if (depth < 1) return;
+/* ТЕНЬ — ГОТОВОЙ МАСКОЙ.
+ *
+ * Тень иконки считалась слоями сглаженных фигур при каждой отрисовке и
+ * стоила 6,4 мс из 8,5 мс на иконку — три четверти кадра рабочего стола.
+ * А фигуры у теней одинаковые: иконки одного размера, карточки одного
+ * размера. Поэтому маска тени (доля непрозрачности 0..255 на пиксель)
+ * считается один раз для сочетания размера, радиуса и глубины и дальше
+ * накладывается одним проходом. Под самой фигурой маска нулевая: фигуру
+ * нарисуют сверху. */
+#define SHADOW_CACHE     6
+#define SHADOW_MAX_SIDE  720
 
-    /* Мягкая тень: несколько слоёв, каждый шире предыдущего, сдвинутые
-       вниз. Под самой фигурой смешивать незачем — её нарисуют сверху
-       непрозрачной, — поэтому пропускается вся её площадь, кроме углов. */
-    uint32_t col = pal(GFX_UI_SHADOW);
-    int layers = depth + 1;
-    int r = clamp_radius(radius, w, h);
-    hole_t hole = { x, y, x + w, y + h, r };
+typedef struct {
+    int w, h, radius, depth;        /* ключ */
+    int mw, mh, ox, oy;             /* размер маски и её сдвиг от фигуры */
+    uint8_t *mask;
+    uint32_t used;
+} shadow_entry_t;
+
+static shadow_entry_t g_shadow[SHADOW_CACHE];
+static uint32_t g_shadow_tick = 0;
+static uint8_t g_shadow_pool[SHADOW_CACHE][SHADOW_MAX_SIDE * SHADOW_MAX_SIDE];
+
+/* Покрытие скруглённого прямоугольника в точке (i, j) маски, 0..AA_FULL. */
+static void shadow_build(shadow_entry_t *e) {
+    int layers = e->depth + 1;
+    int r = clamp_radius(e->radius, e->w, e->h);
+    uint16_t cov[RADIUS_MAX];
+
+    for (int k = 0; k < e->mw * e->mh; k++) e->mask[k] = 0;
 
     for (int k = 0; k < layers; k++) {
-        int e = layers - k;                    /* насколько шире фигуры */
-        rrect_fill(x - e + 1, y - e + 1 + depth, w + 2 * e - 2, h + 2 * e - 2,
-                   radius + e, col, col, 120 / layers + 8, &hole);
+        int ex = layers - k;
+        int lx = -ex + 1 - e->ox, ly = -ex + 1 + e->depth - e->oy;
+        int lw = e->w + 2 * ex - 2, lh = e->h + 2 * ex - 2;
+        int lr = clamp_radius(e->radius + ex, lw, lh);
+        uint32_t alpha = 120 / layers + 8;
+
+        for (int j = 0; j < lh; j++) {
+            int my = ly + j;
+            if (my < 0 || my >= e->mh) continue;
+            uint8_t *row = &e->mask[my * e->mw];
+            int corner = arc_row_coverage(j, lh, lr, cov);
+            for (int i = 0; i < lw; i++) {
+                int mx = lx + i;
+                if (mx < 0 || mx >= e->mw) continue;
+                uint32_t c = AA_FULL;
+                if (corner) {
+                    if (i < lr)            c = cov[i];
+                    else if (i >= lw - lr) c = cov[lw - 1 - i];
+                }
+                uint32_t a = c * alpha / AA_FULL;               /* 0..255 */
+                /* Слой поверх накопленного: 1 - (1 - a)(1 - b). */
+                uint32_t b = row[mx];
+                row[mx] = (uint8_t)(a + b - a * b / 255);
+            }
+        }
     }
+
+    /* Под фигурой — ноль: вся её площадь, кроме квадратов углов. */
+    for (int j = 0; j < e->h; j++) {
+        int my = j - e->oy;
+        if (my < 0 || my >= e->mh) continue;
+        int corner_row = (j < r) || (j >= e->h - r);
+        int x0 = corner_row ? r : 0, x1 = corner_row ? e->w - r : e->w;
+        for (int i = x0; i < x1; i++) {
+            int mx = i - e->ox;
+            if (mx >= 0 && mx < e->mw) e->mask[my * e->mw + mx] = 0;
+        }
+    }
+}
+
+void hal_gfx_drop_shadow(int x, int y, int w, int h, int radius, int depth) {
+    if (depth < 1 || w <= 0 || h <= 0) return;
+    int layers = depth + 1;
+    int ox = -layers, oy = -layers + depth;             /* маска от угла фигуры */
+    int mw = w + 2 * layers, mh = h + 2 * layers;
+
+    if (mw > SHADOW_MAX_SIDE || mh > SHADOW_MAX_SIDE) {
+        /* Слишком большая для запаса — по-старому, слоями. */
+        uint32_t col = pal(GFX_UI_SHADOW);
+        int r = clamp_radius(radius, w, h);
+        hole_t hole = { x, y, x + w, y + h, r };
+        for (int k = 0; k < layers; k++) {
+            int e = layers - k;
+            rrect_fill(x - e + 1, y - e + 1 + depth, w + 2 * e - 2, h + 2 * e - 2,
+                       radius + e, col, col, 120 / layers + 8, &hole);
+        }
+        return;
+    }
+
+    shadow_entry_t *hit = 0, *victim = &g_shadow[0];
+    for (int i = 0; i < SHADOW_CACHE; i++) {
+        shadow_entry_t *e = &g_shadow[i];
+        if (e->mask && e->w == w && e->h == h && e->radius == radius && e->depth == depth) {
+            hit = e;
+            break;
+        }
+        if (!e->mask) { victim = e; break; }
+        if (e->used < victim->used) victim = e;
+    }
+    if (!hit) {
+        hit = victim;
+        hit->w = w; hit->h = h; hit->radius = radius; hit->depth = depth;
+        hit->mw = mw; hit->mh = mh; hit->ox = ox; hit->oy = oy;
+        hit->mask = g_shadow_pool[hit - g_shadow];
+        shadow_build(hit);
+    }
+    hit->used = ++g_shadow_tick;
+
+    gfxfb_blit_alpha8(x + hit->ox, y + hit->oy, hit->mw, hit->mh, hit->mask, hit->mw,
+                      pal(GFX_UI_SHADOW));
 }
 
 /* ---------------- Шар ---------------- */

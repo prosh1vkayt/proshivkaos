@@ -29,12 +29,14 @@
  *     кристалл с 45 до 70 °C за пять минут.
  * Основное раздаёт части только ядрам, подтвердившим, что они не спят, и
  * объявляет сон раньше, чем ядра могут уснуть, — задание никогда не
- * достаётся спящему. Проснувшись (по снятому запрету), ядро снова в работе.
+ * достаётся спящему. Будит спящих программное прерывание через GIC (см.
+ * ниже): с ним ядра присоединяются уже ко второму кадру после простоя.
  */
 #include "arm64.h"
 #include "fdt.h"
 #include "hal_time.h"
 #include "boards/board.h"
+#include "platform.h"
 
 #define SMP_MAX        4
 #define STACK_WORDS    8192             /* 64 КиБ на ядро */
@@ -66,6 +68,9 @@ static volatile int      g_parts = 1;
 
 void mmu_secondary_regs(uint64_t *ttbr, uint64_t *tcr, uint64_t *mair, uint64_t *sctlr);
 void smp_secondary_main(uint64_t idx);
+static void gic_secondary_setup(void);
+static void gic_secondary_ack(void);
+static void gic_wake_secondaries(void);
 extern char _vectors[];
 extern char smp_secondary_entry[];
 
@@ -121,6 +126,7 @@ static volatile uint64_t g_beats[SMP_MAX];
 static volatile uint32_t g_wakes[SMP_MAX];
 
 void smp_secondary_main(uint64_t idx) {
+    gic_secondary_setup();
     g_online[idx] = 1;
     uint32_t seen = g_gen;
     for (;;) {
@@ -128,7 +134,11 @@ void smp_secondary_main(uint64_t idx) {
             /* Сон объявлен: подтверждаем и спим. Основное перестало
                раздавать задания до объявления, так что пропустить нечего. */
             g_awake[idx] = 0;
-            while (g_sleep_req) { __asm__ volatile ("wfe"); g_wakes[idx]++; }
+            while (g_sleep_req) {
+                __asm__ volatile ("wfe");
+                gic_secondary_ack();
+                g_wakes[idx]++;
+            }
             seen = g_gen;               /* всё, что было до сна, — не наше */
             continue;
         }
@@ -212,6 +222,7 @@ void hal_parallel(par_fn fn, void *arg) {
            ближайшем выходе из WFE), а это задание делаем сами. */
         g_sleep_req = 0;
         __asm__ volatile ("sev");
+        gic_wake_secondaries();
         fn(arg, 0, 1);
         return;
     }
@@ -252,6 +263,50 @@ void hal_parallel(par_fn fn, void *arg) {
     }
 }
 
+/* ПОБУДКА ЧЕРЕЗ КОНТРОЛЛЕР ПРЕРЫВАНИЙ.
+ *
+ * SEV ядра не будит (см. шапку), а ждать случайного выхода из WFE —
+ * это сотни миллисекунд, за которые анимация успевает пройти на одном
+ * ядре. Ожидающее прерывание будит ядро из WFE даже при замаскированных
+ * прерываниях — обработчик не нужен: проснувшись, ядро само подтверждает
+ * и закрывает прерывание в контроллере. Шлём программное прерывание (SGI)
+ * номер 1 через GICv2 ядрам 1..3. */
+#define GICD_ISENABLER0   0x100
+#define GICD_IPRIORITYR   0x400
+#define GICD_SGIR         0xF00
+#define GICC_CTLR         0x000
+#define GICC_PMR          0x004
+#define GICC_IAR          0x00C
+#define GICC_EOIR         0x010
+#define SGI_WAKE          1
+
+static uint64_t g_gicd = 0, g_gicc = 0;
+static volatile int g_gic_wake = 0;
+
+static void gic_secondary_setup(void) {
+    if (!g_gicd) return;
+    mmio_write8(g_gicd + GICD_IPRIORITYR + SGI_WAKE, 0xA0);    /* побайтовый регистр, банк ядра */
+    mmio_write32(g_gicd + GICD_ISENABLER0, 1u << SGI_WAKE);
+    mmio_write32(g_gicc + GICC_PMR, 0xF0);
+    mmio_write32(g_gicc + GICC_CTLR, 1);
+}
+
+static void gic_secondary_ack(void) {
+    if (!g_gicd) return;
+    for (int k = 0; k < 8; k++) {
+        uint32_t iar = mmio_read32(g_gicc + GICC_IAR);
+        if ((iar & 0x3FF) >= 1020) break;
+        mmio_write32(g_gicc + GICC_EOIR, iar);
+    }
+}
+
+static void gic_wake_secondaries(void) {
+    if (!g_gicd || !g_gic_wake) return;
+    uint32_t targets = 0;
+    for (int i = 1; i < g_cores; i++) targets |= 1u << i;
+    mmio_write32(g_gicd + GICD_SGIR, (targets << 16) | SGI_WAKE);
+}
+
 static int psci_hvc = 0;
 
 static int64_t psci_cpu_on(uint64_t mpidr, uint64_t entry, uint64_t ctx) {
@@ -274,6 +329,15 @@ void smp_init(void) {
 #endif
     if (!method) { early_con_puts("SMP: PSCI v dereve net, odno yadro\n"); return; }
     psci_hvc = (method[0] == 'h');
+
+    {
+        const platform_info_t *pi = platform();
+        if (pi && pi->gic_base) {
+            g_gicd = pi->gic_base;
+            g_gicc = pi->gic_base + 0x2000;     /* qcom,msm-qgic2: второе окно */
+            g_gic_wake = 1;
+        }
+    }
 
     uint64_t ttbr, tcr, mair, sctlr, mpidr;
     mmu_secondary_regs(&ttbr, &tcr, &mair, &sctlr);

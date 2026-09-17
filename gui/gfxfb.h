@@ -66,6 +66,8 @@ uint32_t *gfxfb_backbuffer32(void);
 void gfxfb_blend_pixel_nodirty(int x, int y, uint32_t rgb, uint32_t alpha255);
 void gfxfb_blend_span_nodirty(int x, int y, int w, uint32_t rgb, uint32_t alpha255);
 void gfxfb_mark_dirty(int x, int y, int w, int h);
+void gfxfb_blend_cov_row(int x, int y, const uint16_t *cov, int n, int dir,
+                         uint32_t rgb, uint32_t alpha255, uint32_t cov_full);
 
 /* Прямоугольник отсечения: пиксели за его пределами молча отбрасываются.
  * Нужен там, где содержимое заведомо больше отведённого места — прокрутка
