@@ -185,3 +185,4 @@ void hal_wcnss_pump(void) {
 }
 
 int wcnss_ctrl_ready(void) { return g_st == ST_READY; }
+int wcnss_ctrl_failed(void) { return g_st == ST_FAILED; }

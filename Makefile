@@ -339,6 +339,7 @@ TOUCH_SOURCES := $(CORE_SOURCES) $(GFX_COMMON_SOURCES) $(ARCH_BASE_SOURCES) \
     gui/touch/app_settings.c \
     gui/touch/app_files.c \
     gui/touch/app_about.c \
+    gui/touch/app_wifi.c \
     gui/touch/touch_ui.c
 
 # ============================================================================

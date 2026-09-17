@@ -42,6 +42,7 @@ static const touch_app_t *const g_apps[] = {
     &app_terminal,
     &app_files,
     &app_settings,
+    &app_wifi,
     &app_about
 };
 #define APP_COUNT ((int)(sizeof(g_apps) / sizeof(g_apps[0])))
@@ -909,6 +910,10 @@ void touch_main(void) {
                     need_redraw(R_ALL);     /* стол целиком — около 16 мс раз в минуту */
             }
         }
+
+        if (g_screen == SCREEN_APP && g_current >= 0 && g_apps[g_current]->tick &&
+            g_apps[g_current]->tick())
+            need_redraw(R_APP);
 
         if (!g_redraw) {
             /* НЕ КРУТИТЬСЯ ВХОЛОСТУЮ.

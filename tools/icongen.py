@@ -22,7 +22,8 @@ SS = 4
 
 NAMES = ["terminal", "folder", "settings", "info", "arrow_back_ios_new",
          "radio_button_unchecked", "check_box_outline_blank", "chevron_right",
-         "arrow_back", "description", "keyboard_hide", "battery_full"]
+         "arrow_back", "description", "keyboard_hide", "battery_full",
+         "wifi", "lock", "wifi_off", "refresh"]
 
 TOKEN = re.compile(r"[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 

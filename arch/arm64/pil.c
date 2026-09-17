@@ -491,6 +491,8 @@ static void wcnss_iris_on(void) {
 }
 
 int pil_start_wifi(void) {
+    extern void wlan_mark_enabled(void);
+    wlan_mark_enabled();
     say("PIL: zapusk processora Wi-Fi (Pronto)\n");
     wcnss_power_on();
     wcnss_iris_on();

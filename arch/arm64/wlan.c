@@ -19,6 +19,7 @@
 #include "arm64.h"
 #include "hal_time.h"
 #include "smd.h"
+#include "hal_wifi.h"
 
 const uint8_t *fw_find(const char *name, uint32_t *size);
 
@@ -131,6 +132,7 @@ typedef struct {
 static wlan_net_t g_nets[MAX_NETS];
 static int g_net_count;
 static uint32_t g_frames;
+static uint32_t g_gen;      /* растёт при каждом изменении — для интерфейса */
 
 static void say(const char *s) { early_con_puts(s); }
 static void say_dec(uint32_t v) {
@@ -209,6 +211,7 @@ static void on_frame(const uint8_t *bd, uint32_t size) {
         g_nets[k].rssi = -127;
     }
     wlan_net_t *n = &g_nets[k];
+    g_gen++;
     for (int i = 0; i < 33; i++) n->ssid[i] = ssid[i];
     n->channel = ch;
     n->secure = secure;
@@ -297,6 +300,9 @@ static void rx(smd_chan_t *ch, const uint8_t *d, uint32_t len) {
         say("WLAN: soobshchenie HAL "); say_dec(type); say(" dlina "); say_dec(len); say("\n");
     }
 }
+
+static int g_enabled;
+void wlan_mark_enabled(void) { g_enabled = 1; g_gen++; }
 
 void wlan_hal_start(void) {
     if (g_st != W_IDLE && g_st != W_FAILED) return;
@@ -435,3 +441,42 @@ void hal_wlan_pump(void) {
     }
     g_busy = 0;
 }
+
+/* ---------------- для интерфейса (hal/hal_wifi.h) ---------------- */
+
+int wcnss_ctrl_failed(void);
+
+int hal_wifi_state(void) {
+    static int last = -1;
+    int st;
+    if (!g_enabled) st = HAL_WIFI_OFF;
+    else if (g_st == W_READY) st = HAL_WIFI_READY;
+    else if (g_st >= S_INIT_SEND) st = HAL_WIFI_SCANNING;
+    else if (g_st == W_FAILED || wcnss_ctrl_failed()) st = HAL_WIFI_FAILED;
+    else st = HAL_WIFI_STARTING;
+    if (st != last) { last = st; g_gen++; }
+    return st;
+}
+
+void hal_wifi_enable(void) {
+    extern int pil_start_wifi(void);
+    if (g_enabled && g_st != W_FAILED && !wcnss_ctrl_failed()) return;
+    if (pil_start_wifi() != 0) g_st = W_FAILED;
+}
+
+void hal_wifi_scan(void) { wlan_scan(); g_gen++; }
+int hal_wifi_count(void) { return g_net_count; }
+
+int hal_wifi_get(int index, hal_wifi_net_t *out) {
+    if (index < 0 || index >= g_net_count) return 0;
+    const wlan_net_t *n = &g_nets[index];
+    for (int i = 0; i < 33; i++) out->ssid[i] = n->ssid[i];
+    for (int i = 0; i < 6; i++) out->bssid[i] = n->bssid[i];
+    out->channel = n->channel;
+    out->rssi = n->rssi;
+    out->security = n->secure == 2 ? HAL_WIFI_WPA2 : n->secure ? HAL_WIFI_PROTECTED : HAL_WIFI_OPEN;
+    return 1;
+}
+
+uint32_t hal_wifi_generation(void) { return g_gen; }
+

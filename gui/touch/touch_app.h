@@ -45,12 +45,18 @@ typedef struct {
 
     /* Нужна ли этому приложению экранная клавиатура. */
     int  (*wants_keyboard)(void);
+
+    /* Необязательно. Зовётся на каждом обороте оболочки, пока приложение
+     * на экране; 1 — «у меня поменялось, перерисуйте». Для тех, у кого
+     * данные приходят сами, без касаний: сканирование Wi-Fi идёт в фоне. */
+    int  (*tick)(void);
 } touch_app_t;
 
 extern const touch_app_t app_terminal;
 extern const touch_app_t app_settings;
 extern const touch_app_t app_files;
 extern const touch_app_t app_about;
+extern const touch_app_t app_wifi;
 
 /* --- Настройки, общие для оболочки и приложения "Настройки" --- */
 int  touch_ui_text_scale(void);
