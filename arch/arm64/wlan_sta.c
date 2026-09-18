@@ -88,6 +88,7 @@ static uint8_t g_pmk[32], g_ptk[48], g_anonce[32], g_snonce[32];
 static uint8_t g_gtk[32]; static uint8_t g_gtk_len, g_gtk_id;
 static uint64_t g_replay;
 static int g_msg3_secure;
+static uint8_t g_key_ver = 2;
 
 static int8_t g_signal;
 
@@ -132,20 +133,18 @@ static void fill_rates(struct wcn36xx_hal_supported_rates *r) {
     r->supported_mcs_set[0] = 0xFF;
 }
 
-/* Контекст станции v1 — общий для CONFIG_STA и вложенного в CONFIG_BSS. */
-static void fill_sta_v1(struct wcn36xx_hal_config_sta_params_v1 *s, int selfsta) {
-    for (int i = 0; i < 6; i++) { s->bssid[i] = g_bssid[i]; s->mac[i] = wlan_self_mac()[i]; }
-    if (selfsta) {
-        /* до ассоциации своя станция: адрес станции = наш, bssid = точка */
-        s->type = 0;
-        s->sta_index = wlan_self_sta_index();
-        s->aid = 0;
-    } else {
-        for (int i = 0; i < 6; i++) { s->mac[i] = g_bssid[i]; }   /* точка как peer */
-        s->type = 0;
-        s->sta_index = WCN36XX_HAL_STA_INVALID_IDX;
-        s->aid = g_aid;
-    }
+/* Контекст станции. В режиме станции (STA) прошивка всюду ждёт одно и то
+   же (wcn36xx_smd_set_sta_params): mac — НАШ адрес, bssid — адрес точки,
+   type = 0, а индекс станции — это НАШ self_sta_index из ADD_STA_SELF, а
+   не индекс из ответа CONFIG_BSS (на этом и падало — прошивка отклоняла
+   CONFIG_STA). До ассоциации точки-собеседника ещё нет: bssid и aid
+   пустые, скорости — умолчания. */
+static void fill_sta_v1(struct wcn36xx_hal_config_sta_params_v1 *s, int have_ap) {
+    for (int i = 0; i < 6; i++) s->mac[i] = wlan_self_mac()[i];
+    if (have_ap) for (int i = 0; i < 6; i++) s->bssid[i] = g_bssid[i];
+    s->type = 0;
+    s->sta_index = wlan_self_sta_index();
+    s->aid = have_ap ? g_aid : 0;
     s->short_preamble_supported = 1;
     s->listen_interval = 1;
     s->wmm_enabled = 0;
@@ -157,7 +156,7 @@ static void fill_sta_v1(struct wcn36xx_hal_config_sta_params_v1 *s, int selfsta)
     s->green_field_capable = 0;
     s->mimo_ps = WCN36XX_HAL_HT_MIMO_PS_STATIC;
     s->encrypt_type = g_secure ? ED_CCMP : ED_NONE;
-    s->bssid_index = 0;
+    s->bssid_index = g_bss_index == 0xFF ? 0 : g_bss_index;
     fill_rates((struct wcn36xx_hal_supported_rates *)&s->supported_rates);
 }
 
@@ -170,8 +169,7 @@ static void send_config_sta(void) {
     static struct wcn36xx_hal_config_sta_req_msg_v1 m;
     for (uint32_t i = 0; i < sizeof(m); i++) ((uint8_t *)&m)[i] = 0;
     hal_hdr(&m, HAL_CONFIG_STA_REQ, 0, sizeof(m) - STA_V1_TRIM);
-    fill_sta_v1(&m.sta_params, 0);
-    m.sta_params.sta_index = g_bss_sta_index;
+    fill_sta_v1(&m.sta_params, 1);
     m.sta_params.action = 0;
     wlan_hal_send(&m, sizeof(m) - STA_V1_TRIM);
     say("STA: CONFIG_STA\n");
@@ -197,7 +195,8 @@ static void send_config_bss(int update) {
     b->ht = 1;
     b->wcn36xx_hal_persona = WCN36XX_HAL_STA_MODE;
     b->max_tx_power = 0x14;
-    fill_sta_v1(&b->sta, 1);
+    /* Пока не ассоциированы (add) — точки-собеседника ещё нет. */
+    fill_sta_v1(&b->sta, update);
     wlan_hal_send(&m, sizeof(m) - BSS_V1_TRIM);
     say(update ? "STA: CONFIG_BSS (update)\n" : "STA: CONFIG_BSS (add)\n");
 }
@@ -441,7 +440,11 @@ static void handle_eapol(const uint8_t *f, uint32_t len) {
         g_replay = replay;
         fill_random(g_snonce, 32);
         compute_ptk(g_anonce);
-        uint16_t out = 0x0109;         /* pairwise + MIC + версия 2 (HMAC-SHA1) */
+        /* Версию дескриптора ключа берём ту же, что прислала точка (для
+           WPA2-CCMP это 2 = HMAC-SHA1). Свою ставить нельзя: точка сверяет
+           MIC по своей версии и наш ответ отвергнет. */
+        g_key_ver = ki & 7;
+        uint16_t out = (uint16_t)(g_key_ver | 0x0108);  /* версия + pairwise + MIC */
         send_eapol(out, g_snonce, 1);
         say("STA: EAPOL 2/4 (SNonce+MIC)\n");
         g_deadline = hal_time_ms() + 2000;
@@ -473,7 +476,7 @@ static void handle_eapol(const uint8_t *f, uint32_t len) {
             }
         }
         /* 4/4: подтверждение */
-        uint16_t out = 0x0309;         /* pairwise + MIC + secure */
+        uint16_t out = (uint16_t)(g_key_ver | 0x0308);  /* версия + pairwise + MIC + secure */
         send_eapol(out, 0, 1);
         say("STA: EAPOL 4/4\n");
         g_msg3_secure = 1;
