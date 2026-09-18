@@ -266,6 +266,10 @@ static int g_magic_pos = 0;
  * Обе — для нагрузочной проверки: компьютер набирает быстрее человека. */
 static uint8_t g_arg_cmd = 0;
 static uint8_t g_arg[8];
+#ifdef CONFIG_FIRMWARE
+static int g_pw_active, g_pw_have, g_pw_idx;
+static char g_pw_buf[64];
+#endif
 static int     g_arg_have = 0, g_arg_need = 0;
 
 /* Ввод живёт в hal_input_arm64.c; в сборке без него — заглушки. */
@@ -288,6 +292,8 @@ static void do_arg_command(void) {
         else if (g_arg[0] == 4) pil_status();
         else if (g_arg[0] == 5) { extern void pil_smsm_apps_ready(void); pil_smsm_apps_ready(); }
         else if (g_arg[0] == 7) { extern void wlan_scan(void); wlan_scan(); }
+        else if (g_arg[0] == 8) { extern void hal_wifi_connect(int, const char *); hal_wifi_connect(0, 0); }
+        else if (g_arg[0] == 9) { extern void hal_wifi_disconnect(void); hal_wifi_disconnect(); }
         else pil_list_smd_channels();
     }
 #endif
@@ -543,6 +549,23 @@ void usb_pos_received(const uint8_t *data, int len) {
             continue;
         }
 
+#ifdef CONFIG_FIRMWARE
+        /* Идёт сбор пароля (POSW): все байты — данные, не буквы команд и
+           не части магической последовательности. */
+        if (g_pw_active) {
+            if (g_pw_idx < 0) { g_pw_idx = c; continue; }
+            if (c == '\n' || g_pw_have >= (int)sizeof(g_pw_buf) - 1) {
+                g_pw_buf[g_pw_have] = 0;
+                extern void hal_wifi_connect(int, const char *);
+                hal_wifi_connect(g_pw_idx, g_pw_buf);
+                g_pw_active = 0;
+                continue;
+            }
+            g_pw_buf[g_pw_have++] = (char)c;
+            continue;
+        }
+#endif
+
         /* Набирается ли отличительная последовательность. */
         if (g_magic_pos < (int)sizeof(g_magic) - 1) {
             if (c == (uint8_t)g_magic[g_magic_pos]) { g_magic_pos++; continue; }
@@ -554,6 +577,12 @@ void usb_pos_received(const uint8_t *data, int len) {
         /* Последовательность набрана — эта буква может быть опасной. */
         g_magic_pos = 0;
 
+#ifdef CONFIG_FIRMWARE
+        if (c == 'W') {                       /* POSW <idx> <pass...> \n */
+            g_pw_active = 1; g_pw_have = 0; g_pw_idx = -1;
+            continue;
+        }
+#endif
         if (c == 'k' || c == 't' || c == 'f' || c == 'u' || c == 'l' ||
             c == 'r' || c == 'x') {
             g_arg_cmd = c;

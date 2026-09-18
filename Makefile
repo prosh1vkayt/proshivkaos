@@ -309,7 +309,7 @@ else
     ARCH_BASE_SOURCES += arch/arm64/cpufreq_msm8953.c
   endif
   ifneq ($(call cfg,FIRMWARE),)
-    ARCH_BASE_SOURCES += arch/arm64/firmware.c arch/arm64/pil.c arch/arm64/smd.c arch/arm64/wcnss_ctrl.c arch/arm64/wlan.c arch/arm64/wlan_dxe.c
+    ARCH_BASE_SOURCES += arch/arm64/firmware.c arch/arm64/pil.c arch/arm64/smd.c arch/arm64/wcnss_ctrl.c arch/arm64/wlan.c arch/arm64/wlan_dxe.c arch/arm64/wlan_sta.c net/net.c net/crypto.c
   endif
 
   BOOT_ASM :=

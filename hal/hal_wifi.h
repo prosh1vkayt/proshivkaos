@@ -39,4 +39,20 @@ int      hal_wifi_get(int index, hal_wifi_net_t *out);
    перерисовать экран. */
 uint32_t hal_wifi_generation(void);
 
+/* ---- подключение ---- */
+#define HAL_WIFI_CONN_IDLE      0
+#define HAL_WIFI_CONN_WORKING   1   /* идёт подключение */
+#define HAL_WIFI_CONN_ONLINE    2   /* подключено, адрес получен */
+#define HAL_WIFI_CONN_FAILED    3
+
+/* Подключиться к сети из списка (индекс как в hal_wifi_get). Для закрытой
+   сети нужен пароль; для открытой pass игнорируется. */
+void     hal_wifi_connect(int index, const char *pass);
+void     hal_wifi_disconnect(void);
+int      hal_wifi_conn_state(void);
+/* Имя сети, к которой подключены/подключаемся; 0 — ни к какой. */
+const char *hal_wifi_conn_ssid(void);
+/* Локальный IPv4 (0, пока нет). buf >= 16 байт. */
+void     hal_wifi_ip(char *buf);
+
 #endif

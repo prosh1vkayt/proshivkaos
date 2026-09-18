@@ -20,6 +20,7 @@
 #include "hal_time.h"
 #include "smd.h"
 #include "hal_wifi.h"
+#include "../../net/net.h"
 
 const uint8_t *fw_find(const char *name, uint32_t *size);
 
@@ -47,6 +48,10 @@ const uint8_t *fw_find(const char *name, uint32_t *size);
 #define SCAN_LAST_CHANNEL        13
 
 typedef void (*dxe_rx_fn)(const uint8_t *bd, uint32_t size);
+int  wlan_sta_hal_rx(uint32_t type, const uint8_t *d, uint32_t len);
+void wlan_sta_frame(const uint8_t *f, uint32_t len, int rssi);
+void wlan_sta_pump(void);
+int  wlan_sta_active(void);
 int  wlan_dxe_init(void);
 void wlan_dxe_smsm_init(void);
 int  wlan_dxe_poll(dxe_rx_fn fn);
@@ -119,6 +124,13 @@ static uint8_t g_buf[4096];
 static uint8_t g_scan_ch;
 static uint64_t g_dwell_end;
 static const uint8_t g_mac[6] = { 0x02, 0x50, 0x4F, 0x53, 0x4E, 0x58 };   /* 02:"POSNX" */
+static uint8_t g_self_sta = 0xFF, g_self_dpu, g_self_sig;
+
+const uint8_t *wlan_self_mac(void) { return g_mac; }
+int wlan_self_sta_index(void) { return g_self_sta; }
+int wlan_self_dpu_index(void) { return g_self_dpu; }
+int wlan_self_dpu_sign(void) { return g_self_sig; }
+int wlan_hal_send(const void *msg, uint32_t len) { return smd_chan_send(&g_ch, (const uint8_t *)msg, len); }
 
 /* Найденные сети. */
 #define MAX_NETS 32
@@ -179,12 +191,17 @@ static void on_frame(const uint8_t *bd, uint32_t size) {
     uint32_t hdr_off = (w3 >> 16) & 0xFF, data_off = (w3 >> 7) & 0x1FF;
     uint32_t hdr_len = (w3 >> 24) & 0xFF, mpdu_len = (w4 >> 16) & 0xFFFF;
     if (data_off <= hdr_off || mpdu_len < hdr_len || hdr_off < 0x4C ||
-        hdr_off + mpdu_len > size || mpdu_len < 36) return;
+        hdr_off + mpdu_len > size || mpdu_len < 24) return;
     const uint8_t *f = bd + hdr_off;
     uint32_t fc = (uint32_t)f[0] | ((uint32_t)f[1] << 8);
-    if ((fc & 0xFC) != 0x80 && (fc & 0xFC) != 0x50) return;       /* маяк / ответ на пробу */
-
     int rssi = -(100 - (int)((w7 >> 24) & 0xFF));
+    if ((fc & 0xFC) != 0x80 && (fc & 0xFC) != 0x50) {             /* не маяк и не ответ на пробу */
+        wlan_sta_frame(f, mpdu_len, rssi);
+        return;
+    }
+    wlan_sta_frame(f, mpdu_len, rssi);                           /* маяки своей точки — уровень сигнала */
+    if (mpdu_len < 36) return;
+
     uint8_t ch = (uint8_t)((((w0 >> 11) & 1) << 4) | ((w0 >> 13) & 0xF));
     uint32_t cap = (uint32_t)f[34] | ((uint32_t)f[35] << 8);
     char ssid[33] = { 0 };
@@ -240,6 +257,7 @@ static void wlan_scan_report(void) {
 
 void wlan_scan(void) {
     if (g_st != W_READY) { say("WLAN: radio ne gotovo k skanirovaniyu\n"); return; }
+    if (wlan_sta_active()) { say("WLAN: podklyucheny — skaniruem pozzhe\n"); return; }
     g_net_count = 0; g_frames = 0;
     g_st = S_INIT_SEND;
 }
@@ -268,6 +286,7 @@ static void rx(smd_chan_t *ch, const uint8_t *d, uint32_t len) {
         uint32_t status = len >= 12 ? get32(d + 8) : 1;
         say("WLAN: svoya stanciya, otvet "); say_dec(status);
         say(", indeks "); say_dec(len >= 13 ? d[12] : 0); say("\n");
+        if (len >= 15) { g_self_sta = d[12]; g_self_dpu = d[13]; g_self_sig = d[14]; }
         if (status) { fail("ADD_STA_SELF otklonyon"); return; }
         wlan_dxe_smsm_init();
         wlan_dxe_init();
@@ -296,7 +315,7 @@ static void rx(smd_chan_t *ch, const uint8_t *d, uint32_t len) {
         for (uint32_t i = 0; i < 4 && 8 + 4 * (i + 1) <= len; i++) { say(" "); early_con_hex32(get32(d + 8 + 4 * i)); }
         say("\n");
         g_st = W_SELF_SEND;
-    } else {
+    } else if (!wlan_sta_hal_rx(type, d, len)) {
         say("WLAN: soobshchenie HAL "); say_dec(type); say(" dlina "); say_dec(len); say("\n");
     }
 }
@@ -312,6 +331,7 @@ void wlan_hal_start(void) {
 
 int wlan_hal_ready(void) { return g_st == W_READY; }
 int wlan_scan_count(void) { return g_net_count; }
+void wlan_conn_changed(void) { g_gen++; }
 
 void hal_wlan_pump(void) {
     if (g_st == W_IDLE || g_st == W_FAILED || g_busy) return;
@@ -439,6 +459,7 @@ void hal_wlan_pump(void) {
     default:
         break;
     }
+    if (g_st == W_READY) wlan_sta_pump();
     g_busy = 0;
 }
 
@@ -480,3 +501,45 @@ int hal_wifi_get(int index, hal_wifi_net_t *out) {
 
 uint32_t hal_wifi_generation(void) { return g_gen; }
 
+
+/* ---------------- подключение для интерфейса ---------------- */
+
+void wlan_sta_connect(const uint8_t *bssid, const uint8_t *ssid, uint8_t ssid_len,
+                      uint8_t channel, uint8_t secure, const char *pass);
+void wlan_sta_disconnect(void);
+int  wlan_sta_state(void);
+int  wlan_sta_connected(void);
+const uint8_t *wlan_sta_ssid(uint8_t *len);
+
+static char g_conn_ssid[33];
+
+void hal_wifi_connect(int index, const char *pass) {
+    if (index < 0 || index >= g_net_count) return;
+    const wlan_net_t *n = &g_nets[index];
+    uint8_t sl = 0;
+    while (sl < 32 && n->ssid[sl]) { g_conn_ssid[sl] = n->ssid[sl]; sl++; }
+    g_conn_ssid[sl] = 0;
+    wlan_sta_connect(n->bssid, (const uint8_t *)n->ssid, sl, n->channel, n->secure, pass);
+    g_gen++;
+}
+
+void hal_wifi_disconnect(void) { wlan_sta_disconnect(); g_gen++; }
+
+int hal_wifi_conn_state(void) {
+    int s = wlan_sta_state();
+    /* C_IDLE=0, C_FAIL=14, C_UP=13 (см. wlan_sta.c) */
+    if (s == 0) return HAL_WIFI_CONN_IDLE;
+    if (s == 14) return HAL_WIFI_CONN_FAILED;
+    if (s == 13) return HAL_WIFI_CONN_ONLINE;
+    return HAL_WIFI_CONN_WORKING;
+}
+
+const char *hal_wifi_conn_ssid(void) {
+    return wlan_sta_state() == 0 ? "" : g_conn_ssid;
+}
+
+void hal_wifi_ip(char *buf) {
+    net_status_t st;
+    net_status(&st);
+    net_format_ip(st.ip, buf);
+}

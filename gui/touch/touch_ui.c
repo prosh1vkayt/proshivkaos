@@ -173,6 +173,15 @@ static void relayout_current_app(void) {
     }
 }
 
+/* Приложение просит показать/спрятать клавиатуру не на запуске, а по
+   ходу дела — например, экран Wi-Fi при вводе пароля. */
+void touch_ui_keyboard(int on) {
+    if (osk_visible() == !!on) return;
+    osk_set_visible(on);
+    relayout_current_app();
+    need_redraw(R_ALL);
+}
+
 static void launch_app(int index) {
     if (index < 0 || index >= APP_COUNT) return;
 

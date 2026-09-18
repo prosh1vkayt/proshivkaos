@@ -92,6 +92,22 @@ extern char __dma_start[];
 #define CH_DEF_RX_L  (H_COMMON | BTHLD(6) | PRIO(5) | H_SEL(1))
 #define CH_DEF_RX_H  (H_COMMON | BTHLD(8) | PRIO(6) | H_SEL(3))
 
+/* Передача: канал берёт данные из памяти (DIQ), а не отдаёт в неё. */
+#define H_DIQ      (1u << 6)
+#define H_TX_COMMON (H_EN | XTYPE(2) | H_EOP | H_DIQ | H_PDU_REL | H_INE_ED | H_INE_ERR | \
+                     H_INE_DONE | H_EDEN | H_EDVEN | H_ENDIAN | H_SWAP)
+#define CH_DEF_TX_L  (H_TX_COMMON | BTHLD(5) | PRIO(4) | H_SEL(0))
+#define CH_DEF_TX_H  (H_TX_COMMON | BTHLD(7) | PRIO(6) | H_SEL(4))
+
+/* Кадр уходит парой дескрипторов: первый — дескриптор буфера (BD, 40
+   байт служебных полей для прошивки), второй — сам кадр 802.11. */
+#define CTRL_TX_L_BD   (C_VLD | XTYPE(2) | C_DIQ | BTHLD(5) | PRIO(4) | C_SWAP | C_ENDIAN)
+#define CTRL_TX_L_SKB  (C_VLD | XTYPE(2) | C_EOP | C_DIQ | BTHLD(5) | PRIO(4) | C_INT | C_SWAP | C_ENDIAN)
+#define CTRL_TX_H_BD   (C_VLD | XTYPE(2) | C_DIQ | BTHLD(7) | PRIO(6) | C_SWAP | C_ENDIAN)
+#define CTRL_TX_H_SKB  (C_VLD | XTYPE(2) | C_EOP | C_DIQ | BTHLD(7) | PRIO(6) | C_INT | C_SWAP | C_ENDIAN)
+#define TX_BD_SLOT     128
+#define TX_FRAME_SLOT  2048
+
 #define WQ_TX                 0x6       /* Pronto v3 */
 #define WQ_RX_L               0xB
 #define WQ_RX_H               0x4
@@ -109,9 +125,11 @@ typedef void (*dxe_rx_fn)(const uint8_t *bd, uint32_t size);
 
 typedef struct {
     uint64_t desc;          /* адрес кольца дескрипторов */
-    uint64_t bufs;          /* буферы приёма */
+    uint64_t bufs;          /* буферы приёма / кадров передачи */
+    uint64_t bds;           /* дескрипторы буфера передачи */
     int      n, head;
     uint32_t ctrl, int_mask, en_mask, reg;
+    uint32_t ctrl_bd, ctrl_skb, def_ctrl;
 } ring_t;
 
 static ring_t g_rx_l, g_rx_h, g_tx_l, g_tx_h;
@@ -170,10 +188,18 @@ int wlan_dxe_init(void) {
                  ((INT_CH3 | INT_CH1) << 16) | INT_CH0 | INT_CH4);
 
     ring_init(&g_tx_l, N_TX_L, CTRL_TX_L, WQ_TX, 0);
+    g_tx_l.bds = take(N_TX_L / 2 * TX_BD_SLOT);
+    g_tx_l.bufs = take(N_TX_L / 2 * TX_FRAME_SLOT);
+    g_tx_l.ctrl_bd = CTRL_TX_L_BD; g_tx_l.ctrl_skb = CTRL_TX_L_SKB;
+    g_tx_l.def_ctrl = CH_DEF_TX_L; g_tx_l.reg = CH_TX_L; g_tx_l.int_mask = INT_CH0;
     dxe_w(CH_TX_L + CH_NEXT, (uint32_t)g_tx_l.desc);
     dxe_w(CH_TX_L + CH_DEST, WQ_TX);
 
     ring_init(&g_tx_h, N_TX_H, CTRL_TX_H, WQ_TX, 0);
+    g_tx_h.bds = take(N_TX_H / 2 * TX_BD_SLOT);
+    g_tx_h.bufs = take(N_TX_H / 2 * TX_FRAME_SLOT);
+    g_tx_h.ctrl_bd = CTRL_TX_H_BD; g_tx_h.ctrl_skb = CTRL_TX_H_SKB;
+    g_tx_h.def_ctrl = CH_DEF_TX_H; g_tx_h.reg = CH_TX_H; g_tx_h.int_mask = INT_CH4;
     dxe_w(CH_TX_H + CH_NEXT, (uint32_t)g_tx_h.desc);
     dxe_w(CH_TX_H + CH_DEST, WQ_TX);
 
@@ -224,7 +250,50 @@ static int ring_rx(ring_t *r, dxe_rx_fn fn) {
     return got;
 }
 
+/* Состояние каналов передачи: снять отметки «готово», чтобы не копились. */
+static void ring_tx_ack(ring_t *r) {
+    uint32_t status = dxe_r(r->reg + CH_STATUS);
+    if (!(status & (STAT_DONE | STAT_ED | STAT_ERR))) return;
+    dxe_w(DXE_INT_CLR, r->int_mask);
+    if (status & STAT_ERR)  { dxe_w(DXE_INT_ERR_CLR, r->int_mask); early_con_puts("DXE: oshibka kanala peredachi\n"); }
+    if (status & STAT_DONE) dxe_w(DXE_INT_DONE_CLR, r->int_mask);
+    if (status & STAT_ED)   dxe_w(DXE_INT_ED_CLR, r->int_mask);
+}
+
 int wlan_dxe_poll(dxe_rx_fn fn) {
     if (!g_ready) return 0;
+    ring_tx_ack(&g_tx_l);
+    ring_tx_ack(&g_tx_h);
     return ring_rx(&g_rx_l, fn) + ring_rx(&g_rx_h, fn);
+}
+
+/* Отдать кадр на передачу: high — канал управления (кадры mgmt), иначе
+   данных. bd — готовый дескриптор буфера (уже в порядке байт прошивки).
+   0 — кольцо занято (прошлые кадры ещё не ушли). */
+int wlan_dxe_tx(int high, const uint8_t *bd, uint32_t bd_len, const uint8_t *frame, uint32_t len) {
+    if (!g_ready || bd_len > TX_BD_SLOT || len > TX_FRAME_SLOT) return 0;
+    ring_t *r = high ? &g_tx_h : &g_tx_l;
+    uint64_t d_bd = r->desc + (uint32_t)r->head * DESC_BYTES;
+    uint64_t d_fr = r->desc + (uint32_t)(r->head + 1) * DESC_BYTES;
+    if ((mmio_read32(d_bd) & C_VLD) || (mmio_read32(d_fr) & C_VLD)) return 0;
+
+    uint32_t slot = (uint32_t)r->head / 2;
+    uint64_t bdbuf = r->bds + slot * TX_BD_SLOT, fbuf = r->bufs + slot * TX_FRAME_SLOT;
+    for (uint32_t i = 0; i < bd_len; i++) mmio_write8(bdbuf + i, bd[i]);
+    for (uint32_t i = 0; i < len; i++) mmio_write8(fbuf + i, frame[i]);
+
+    mmio_write32(d_bd + 4, bd_len);
+    mmio_write32(d_bd + 8, (uint32_t)bdbuf);
+    mmio_write32(d_bd + 12, WQ_TX);
+    mmio_write32(d_fr + 4, len);
+    mmio_write32(d_fr + 8, (uint32_t)fbuf);
+    mmio_write32(d_fr + 12, WQ_TX);
+    dsb_sy();
+    mmio_write32(d_fr, r->ctrl_skb);
+    dsb_sy();
+    mmio_write32(d_bd, r->ctrl_bd);
+    dsb_sy();
+    dxe_w(r->reg + CH_CTL, r->def_ctrl);
+    r->head = (r->head + 2) % r->n;
+    return 1;
 }

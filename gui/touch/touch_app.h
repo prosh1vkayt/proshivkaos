@@ -78,4 +78,7 @@ void touch_ui_go_home(void);
  * полем name из touch_app_t; неизвестное имя просто игнорируется. */
 void touch_ui_open(const char *app_name);
 
+/* Показать или спрятать экранную клавиатуру во время работы приложения. */
+void touch_ui_keyboard(int on);
+
 #endif
