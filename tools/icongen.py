@@ -23,7 +23,10 @@ SS = 4
 NAMES = ["terminal", "folder", "settings", "info", "arrow_back_ios_new",
          "radio_button_unchecked", "check_box_outline_blank", "chevron_right",
          "arrow_back", "description", "keyboard_hide", "battery_full",
-         "wifi", "lock", "wifi_off", "refresh"]
+         "wifi", "lock", "wifi_off", "refresh",
+         "signal_wifi_4_bar", "network_wifi_3_bar", "network_wifi_2_bar",
+         "network_wifi_1_bar", "signal_wifi_0_bar", "lan", "public",
+         "download", "check_circle"]
 
 TOKEN = re.compile(r"[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 

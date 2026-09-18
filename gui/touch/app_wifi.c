@@ -89,6 +89,15 @@ static uint8_t level_color(int rssi) {
     return GFX_UI_TEXT_DIM;
 }
 
+/* Значок по силе сигнала — четыре «дуги», как в статусбаре Android. */
+static int level_icon(int rssi) {
+    if (rssi >= -55) return ICON_WIFI_4;
+    if (rssi >= -67) return ICON_WIFI_3;
+    if (rssi >= -75) return ICON_WIFI_2;
+    if (rssi >= -85) return ICON_WIFI_1;
+    return ICON_WIFI_0;
+}
+
 static void status_rects(int *sx, int *sy, int *sw, int *sh, int *rx, int *ry, int *rs) {
     int cx = g_x + TM.pad, cy = g_y + header_h() + TM.pad;
     int cw = g_w - TM.pad * 2, ch = status_h();
@@ -127,7 +136,8 @@ static int draw_conn_banner(int x, int y, int w) {
                   cs == HAL_WIFI_CONN_FAILED ? GFX_UI_WARN : GFX_UI_SURFACE_2;
     touch_draw_card(x, y, w, h, col == GFX_UI_SURFACE_2 ? GFX_UI_SURFACE_2 : GFX_UI_SURFACE);
     int is = TM.touch;
-    icon_draw(cs == HAL_WIFI_CONN_FAILED ? ICON_WIFI_OFF : ICON_WIFI,
+    icon_draw(cs == HAL_WIFI_CONN_FAILED ? ICON_WIFI_OFF :
+              cs == HAL_WIFI_CONN_ONLINE ? ICON_CHECK : ICON_WIFI,
               x + TM.pad * 2, y + (h - is) / 2, is, hal_gfx_palette_rgb(col));
     int tx = x + TM.pad * 4 + is;
     char l1[48]; int p = 0; l1[0] = 0;
@@ -191,7 +201,7 @@ static void wifi_render(void) {
         if (y + h < list_y || y > list_y + list_h) continue;
         touch_draw_card(x, y, w, h, GFX_UI_SURFACE);
         int is = TM.touch * 3 / 4, ix = x + TM.pad * 2, iy = y + (h - is) / 2;
-        icon_draw(ICON_WIFI, ix, iy, is, hal_gfx_palette_rgb(level_color(n->rssi)));
+        icon_draw(level_icon(n->rssi), ix, iy, is, hal_gfx_palette_rgb(level_color(n->rssi)));
         int tx = ix + is + TM.pad * 2;
         int l1 = y + h / 2 - FONT_H * TM.scale_small - TM.gap / 4;
         int l2 = y + h / 2 + TM.gap / 4;
