@@ -94,6 +94,13 @@ void vga_putc(char c) {
         vga_col = 0;
         vga_row++;
     } else if (c == '\b') {
+        /* В начале строки Backspace возвращает на конец предыдущей — иначе
+         * строка, перенесённая на следующий ряд, не стирается целиком
+         * (нужно истории команд: ↑ заменяет длинные строки). */
+        if (vga_col == 0 && vga_row > 0) {
+            vga_row--;
+            vga_col = VGA_WIDTH;
+        }
         if (vga_col > 0) {
             vga_col--;
             VGA_MEMORY[vga_row * VGA_WIDTH + vga_col] = vga_entry(' ', vga_current_color);

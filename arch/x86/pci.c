@@ -7,7 +7,7 @@
 #define PCI_CONFIG_ADDRESS 0xCF8
 #define PCI_CONFIG_DATA    0xCFC
 
-static uint32_t pci_config_read32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset) {
+uint32_t pci_config_read32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset) {
     uint32_t address = (1U << 31)
         | ((uint32_t)bus << 16)
         | ((uint32_t)dev << 11)
@@ -48,4 +48,31 @@ uint32_t pci_read_bar0(uint8_t bus, uint8_t dev, uint8_t func) {
     /* бит 0 = 0 значит memory-mapped (не I/O); маскируем нижние флаговые
      * биты (для 32-битного non-prefetchable BAR это младшие 4 бита) */
     return bar0 & 0xFFFFFFF0;
+}
+
+void pci_config_write32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset, uint32_t val) {
+    uint32_t address = (1U << 31)
+        | ((uint32_t)bus << 16)
+        | ((uint32_t)dev << 11)
+        | ((uint32_t)func << 8)
+        | (offset & 0xFC);
+
+    outl(PCI_CONFIG_ADDRESS, address);
+    outl(PCI_CONFIG_DATA, val);
+}
+
+int pci_find_device(uint16_t vendor, uint16_t device,
+                    uint8_t *out_bus, uint8_t *out_dev, uint8_t *out_func) {
+    for (uint16_t d = 0; d < 32; d++) {
+        for (uint8_t f = 0; f < 8; f++) {
+            uint32_t id = pci_config_read32(0, (uint8_t)d, f, 0x00);
+            if ((id & 0xFFFF) == vendor && (id >> 16) == device) {
+                *out_bus = 0;
+                *out_dev = (uint8_t)d;
+                *out_func = f;
+                return 1;
+            }
+        }
+    }
+    return 0;
 }

@@ -23,6 +23,10 @@ void hal_console_putc(char c);
 void hal_console_write(const char *s);
 int  hal_console_getc(void);      /* -1, если нет данных (неблокирующий poll) */
 char hal_console_getc_blocking(void);
+int    hal_net_init(void);
+void   hal_net_get_mac(uint8_t out[6]);
+int    hal_net_send(const void *data, size_t len);
+size_t hal_net_recv(void *out, size_t max_len);
 
 /* Цвет консоли: 16-цветная VGA-палитра (0..15), см. hal_console_colors ниже.
  * На бэкендах без цвета (будущий ARM64/UART) — просто no-op. */

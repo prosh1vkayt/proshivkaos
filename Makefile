@@ -188,7 +188,7 @@ LIBGCC := $(shell $(CC) $(ARCH_CFLAGS) -print-libgcc-file-name 2>/dev/null)
 CFLAGS := -std=gnu11 -ffreestanding -fno-stack-protector -fno-pie -nostdlib \
           -fno-builtin -Wall -Wextra -O2 $(ARCH_CFLAGS) \
           -DPROSHIVKA_SCREEN_W=$(SCREEN_W) -DPROSHIVKA_SCREEN_H=$(SCREEN_H) \
-          -Ihal -Ifs -Ishell -Iapps -Igui -Igui/touch -Iarch/$(ARCH) \
+          -Ihal -Ifs -Ishell -Iapps -Inet -Igui -Igui/touch -Iarch/$(ARCH) \
           $(EXTRA_CFLAGS)
 
 # ============================================================================
@@ -233,7 +233,9 @@ ifeq ($(ARCH),x86)
       kernel/kernel.c kernel/panic.c \
       hal/hal_console.c \
       arch/x86/vga.c arch/x86/keyboard.c arch/x86/cpu.c \
-	  shell/shell.c apps/editor.c
+      arch/x86/pci.c arch/x86/net_rtl8139.c \
+      net/netcore.c net/udp.c net/dhcp.c net/dns.c net/tcp.c net/ping.c \
+	  shell/shell.c shell/lineedit.c apps/editor.c
   TEXT_ASM := boot/boot.asm
 
   # Графический бэкенд экрана и ввода
@@ -269,8 +271,9 @@ else
 
   TEXT_SOURCES := $(CORE_SOURCES) $(ARCH_BASE_SOURCES) \
       kernel/kernel.c kernel/panic.c \
-      hal/hal_console_arm64.c \
-      shell/shell.c apps/editor.c
+      hal/hal_console_arm64.c hal/hal_net_stub.c \
+      net/netcore.c net/udp.c net/dhcp.c net/dns.c net/tcp.c net/ping.c \
+      shell/shell.c shell/lineedit.c apps/editor.c
   TEXT_ASM :=
 
   ARCH_GFX_SOURCES := \
@@ -611,11 +614,15 @@ bootimg-raw: $(PACKED_RAW)
 # ============================================================================
 ifeq ($(ARCH),x86)
 
+# Сетевая карта RTL8139 в user-режиме QEMU (NAT): шлюз 10.0.2.2, наш адрес
+# 10.0.2.15. Отключить: make run NET=
+NET ?= -netdev user,id=n0 -device rtl8139,netdev=n0
+
 run: $(KERNEL_ELF)
-	$(QEMU) -kernel $(KERNEL_ELF)
+	$(QEMU) -kernel $(KERNEL_ELF) $(NET)
 
 run-big: $(KERNEL_ELF)
-	$(QEMU) -kernel $(KERNEL_ELF) -display sdl
+	$(QEMU) -kernel $(KERNEL_ELF) -display sdl $(NET)
 
 gui-run: $(GUI_ELF)
 	$(QEMU) -kernel $(GUI_ELF)
@@ -686,6 +693,5 @@ help:
 	@echo "  make ARCH=arm64 image          сырой ARM64 Image для загрузчика"
 	@echo "  make ARCH=arm64 bootimg        Android boot.img для fastboot"
 	@echo "  make mido                      образ для Redmi Note 4/4X одной командой"
-	@echo "  make clean                     удалить build/"
-	@echo ""
+	@echo "  make clean                     удалить build/"	@echo ""
 	@echo "  Разрешение тач-сборки: make ARCH=arm64 touch SCREEN_W=720 SCREEN_H=1440"

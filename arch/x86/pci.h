@@ -14,4 +14,10 @@ int pci_find_vga(uint8_t *out_bus, uint8_t *out_dev, uint8_t *out_func);
 /* Читает BAR0 устройства и возвращает физический адрес (маскирует флаги). */
 uint32_t pci_read_bar0(uint8_t bus, uint8_t dev, uint8_t func);
 
+/* Сырой доступ к config space и поиск устройства по vendor/device ID. */
+uint32_t pci_config_read32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset);
+void     pci_config_write32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset, uint32_t val);
+int      pci_find_device(uint16_t vendor, uint16_t device,
+                         uint8_t *out_bus, uint8_t *out_dev, uint8_t *out_func);
+
 #endif
