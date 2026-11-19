@@ -41,7 +41,8 @@ proshivkaos-next/
 │
 ├── arch/
 │   ├── x86/
-│   │   ├── vga.c, keyboard.c, mouse.c, cpu.c, rtc.c, pit.c
+│   │   ├── vga.c, keyboard.c, mouse.c, mouse.h, ports.c, cpu.c, rtc.c, pit.c
+|   |   |-- net_rtl8139.c                 # драйвер сетевой карты QEMU
 │   │   ├── vga13h.c, vbe.c, pci.c        # графические режимы
 │   │   └── hal_gfx_x86.c                 # инициализация экрана: mode13h/VBE
 │   └── arm64/
@@ -71,9 +72,19 @@ proshivkaos-next/
 │       ├── touch_theme.c        # метрики от размера экрана, элементы
 │       ├── osk.c                # экранная клавиатура
 │       └── app_*.c              # терминал, файлы, настройки, о системе
+|-- net/                         # сетевые функции
+|   |-- crypto.c/.h               # криптография WPA2-PSK
+|   |-- dhcp.c/.h                 # получение IP-адреса
+|   |-- dns.c/.h                  # DNS
+|   |-- net.c/.h                  # сетевой стек
+|   |-- netcmd.c/.h               # запуск сетевых утилит (ping, http, udpsend и т.д.)
+|   |-- netcore.c/.h              # arping
+|   └── ping.c/.h, tcp.c/.h, udp.c/.h # сетевые утилиты
 │
 ├── fs/ramfs.c                   # файловая система в ОЗУ
-├── shell/shell.c                # командная строка текстового профиля
+├── shell/                # командная строка текстового профиля
+|   |-- lineedit.c/.h            # редактор строки консоли (история команд)
+|   └── shell.c                  # консоль и команды
 ├── apps/app_api.h               # заголовок для прикладных программ
 ├── tools/mkbootimg.py           # упаковка в Android boot.img
 └── docs/
