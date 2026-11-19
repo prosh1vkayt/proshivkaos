@@ -106,7 +106,7 @@ int dhcp_acquire(void) {
     net_copy(net_cfg.ip, zero, 4);
 
     uint32_t xid = ++xid_counter;
-    for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+    for (int attempt = 0; attempt < 3 && !ok && !net_aborted(); attempt++) {
         size_t n = build(DHCPDISCOVER, xid, 0, 0);
         if (udp_send_broadcast(PORT_CLIENT, PORT_SERVER, msg, n) != NET_OK)
             continue;

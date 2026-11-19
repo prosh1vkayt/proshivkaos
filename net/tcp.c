@@ -171,11 +171,11 @@ int tcp_connect(const uint8_t ip[4], uint16_t port) {
     rb_head = rb_count = 0;
     state = ST_SYN_SENT;
 
-    for (int attempt = 0; attempt < 4; attempt++) {
+    for (int attempt = 0; attempt < 4 && !net_aborted(); attempt++) {
         int r = send_seg(F_SYN, snd_una, 0, 0, 1);
         if (r != NET_OK) { state = ST_CLOSED; return map_err(r); }
 
-        for (long t = 0; t < NET_POLL_LIMIT / 4 && state == ST_SYN_SENT; t++)
+        for (long t = 0; NET_WAITING(t, NET_POLL_LIMIT / 4) && state == ST_SYN_SENT; t++)
             poll_once();
 
         if (state == ST_ESTAB) return TCP_OK;
@@ -197,12 +197,12 @@ int tcp_send(const void *data, size_t len) {
         uint32_t end = seq + (uint32_t)chunk;
         int ok = 0;
 
-        for (int attempt = 0; attempt < 6 && !ok; attempt++) {
+        for (int attempt = 0; attempt < 6 && !ok && !net_aborted(); attempt++) {
             int r = send_seg(F_ACK | F_PSH, seq, p + sent, chunk, 0);
             if (r != NET_OK) return map_err(r);
             snd_nxt = end;
 
-            for (long t = 0; t < NET_POLL_LIMIT / 4; t++) {
+            for (long t = 0; NET_WAITING(t, NET_POLL_LIMIT / 4); t++) {
                 poll_once();
                 if (state == ST_CLOSED) return TCP_ERR_RESET;
                 if ((int32_t)(snd_una - end) >= 0) { ok = 1; break; }
@@ -231,7 +231,7 @@ int tcp_recv(void *buf, size_t max, long limit) {
         }
         if (fin_rcvd) return 0;
         if (state == ST_CLOSED) return reset_seen ? TCP_ERR_RESET : TCP_ERR_STATE;
-        if (t >= limit) return TCP_ERR_TIMEOUT;
+        if (t >= limit || net_aborted()) return TCP_ERR_TIMEOUT;
         poll_once();
     }
 }
@@ -241,7 +241,7 @@ void tcp_close(void) {
         send_seg(F_FIN | F_ACK, snd_nxt, 0, 0, 0);
         snd_nxt++;
         state = ST_FIN_SENT;
-        for (long t = 0; t < NET_POLL_LIMIT / 8; t++) {
+        for (long t = 0; NET_WAITING(t, NET_POLL_LIMIT / 8); t++) {
             poll_once();
             if (state == ST_CLOSED || (int32_t)(snd_una - snd_nxt) >= 0) break;
         }

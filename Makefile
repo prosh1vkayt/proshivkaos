@@ -328,6 +328,15 @@ GUI_SOURCES := $(CORE_SOURCES) $(GFX_COMMON_SOURCES) $(ARCH_BASE_SOURCES) \
     gui/wallpaper_320x200.c gui/wallpaper_640x480.c gui/wallpaper_800x600.c \
     gui/cursor.c gui/gconsole.c gui/terminal_app.c gui/settings_app.c gui/wm.c
 
+# Сеть в окне терминала (только x86): драйвер карты, стек и сетевые команды.
+# terminal_app.c общий с тач-сборкой, поэтому сеть подключается не в нём, а
+# через gui/terminal_net.c — в тач-сборке этого файла нет, и ничего не меняется.
+ifeq ($(ARCH),x86)
+  GUI_SOURCES += arch/x86/net_rtl8139.c \
+      net/netcore.c net/udp.c net/dhcp.c net/dns.c net/tcp.c net/ping.c net/netcmd.c \
+      gui/terminal_net.c
+endif
+
 # --- Тач-интерфейс (обе архитектуры) ---------------------------------------
 # Запечённые обои (gui/wallpaper_*.c) сюда НЕ входят намеренно: они
 # нарисованы под landscape-разрешения 4:3 и на портретном экране телефона
@@ -625,10 +634,10 @@ run-big: $(KERNEL_ELF)
 	$(QEMU) -kernel $(KERNEL_ELF) -display sdl $(NET)
 
 gui-run: $(GUI_ELF)
-	$(QEMU) -kernel $(GUI_ELF)
+	$(QEMU) -kernel $(GUI_ELF) $(NET)
 
 gui-run-big: $(GUI_ELF)
-	$(QEMU) -kernel $(GUI_ELF) -display sdl
+	$(QEMU) -kernel $(GUI_ELF) -display sdl $(NET)
 
 # На x86 пальцем работает мышь: hal_input_x86.c переводит её относительные
 # смещения в те же события "нажали/ведут/отпустили", что приходят с
@@ -693,5 +702,6 @@ help:
 	@echo "  make ARCH=arm64 image          сырой ARM64 Image для загрузчика"
 	@echo "  make ARCH=arm64 bootimg        Android boot.img для fastboot"
 	@echo "  make mido                      образ для Redmi Note 4/4X одной командой"
-	@echo "  make clean                     удалить build/"	@echo ""
+	@echo "  make clean                     удалить build/"
+	@echo ""
 	@echo "  Разрешение тач-сборки: make ARCH=arm64 touch SCREEN_W=720 SCREEN_H=1440"

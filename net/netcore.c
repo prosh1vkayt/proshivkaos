@@ -28,6 +28,25 @@ void net_cfg_init(void) {
     hal_net_get_mac(net_cfg.mac);
 }
 
+/* ---------------- насос событий ---------------- */
+
+static net_pump_fn pump_fn;
+static unsigned    pump_ctr;
+static int         abort_flag;
+
+void net_set_pump(net_pump_fn fn) { pump_fn = fn; }
+int  net_aborted(void)            { return abort_flag; }
+void net_abort_clear(void)        { abort_flag = 0; }
+
+/* Опрос карты — это порт ввода-вывода, на эмуляторе он не мгновенный;
+ * раз в 2048 вызовов (порядка сотых долей секунды) отдаём управление
+ * интерфейсу. */
+void net_pump(void) {
+    if (!pump_fn) return;
+    if (++pump_ctr & 0x7FFu) return;
+    if (pump_fn()) abort_flag = 1;
+}
+
 /* ---------------- контрольные суммы ---------------- */
 
 uint32_t net_csum_add(uint32_t sum, const uint8_t *d, size_t n) {
@@ -85,7 +104,8 @@ int net_arp_resolve(const uint8_t ip[4], uint8_t mac_out[6]) {
     arp_fill(f, BCAST_MAC, 1, zero, ip);
     if (hal_net_send(f, 42) != 0) return NET_ERR_TX;
 
-    for (long t = 0; t < NET_POLL_LIMIT; t++) {
+    for (long t = 0; NET_WAITING(t, NET_POLL_LIMIT); t++) {
+        net_pump();
         size_t n = hal_net_recv(rxf, sizeof rxf);
         if (!n) continue;
         if (n >= 42 && net_get16(rxf + 12) == 0x0806) {
@@ -154,6 +174,7 @@ int net_ip_send(const uint8_t dst[4], uint8_t proto,
 
 size_t net_ip_recv(uint8_t *proto, uint8_t src[4], uint8_t dst[4],
                    uint8_t *buf, size_t max) {
+    net_pump();
     size_t n = hal_net_recv(rxf, sizeof rxf);
     if (!n || n < 14) return 0;
 

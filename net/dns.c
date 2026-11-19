@@ -82,7 +82,7 @@ int dns_resolve(const char *name, uint8_t out[4]) {
     net_put16(q + p, 1);  p += 2;                         /* QTYPE = A */
     net_put16(q + p, 1);  p += 2;                         /* QCLASS = IN */
 
-    for (int attempt = 0; attempt < 3; attempt++) {
+    for (int attempt = 0; attempt < 3 && !net_aborted(); attempt++) {
         if (udp_send(net_cfg.dns, DNS_PORT_LOCAL, DNS_PORT_SERVER, q, p) != NET_OK)
             return DNS_ERR_NET;
 

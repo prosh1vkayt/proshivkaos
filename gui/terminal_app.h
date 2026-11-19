@@ -12,7 +12,7 @@
 #define TERM_LINE_BUF   100   /* было 48: длинная команда молча обрезалась */
 #define TERM_HOME_DIR   "/root"
 
-typedef struct {
+typedef struct terminal_app {
     gconsole_t console;
     char line[TERM_LINE_BUF];
     int line_len;
@@ -23,6 +23,11 @@ typedef struct {
     char edit_filename[RAMFS_MAX_PATH_LEN];
     char edit_buf[RAMFS_MAX_FILE_SIZE];
     size_t edit_total;
+
+    /* Команда выполняется (сетевые команды ждут ответа). Пока busy,
+     * клавиши не попадают в строку ввода, кроме Ctrl+C — он ставит cancel. */
+    int busy;
+    int cancel;
 } terminal_app_t;
 
 void terminal_app_init(terminal_app_t *app, const gui_window_t *win);
@@ -34,5 +39,16 @@ void terminal_app_init(terminal_app_t *app, const gui_window_t *win);
 void terminal_app_init_colors(terminal_app_t *app, const gui_window_t *win,
                                uint8_t fg, uint8_t bg);
 void terminal_app_handle_char(terminal_app_t *app, char c);
+
+/* Внешние команды. Терминал сам про них ничего не знает: если команда не
+ * встроенная, он спрашивает обработчик. Нужен, чтобы сетевой стек
+ * подключался только там, где он есть (в тач-сборке обработчика нет). */
+#define TERM_MAX_ARGS 12
+typedef int (*terminal_ext_cmd_fn)(terminal_app_t *app, int argc, char *argv[]);
+void terminal_app_set_ext_command(terminal_ext_cmd_fn fn);
+void terminal_app_set_ext_help(const char *text);   /* строка для команды help */
+
+/* Пользователь нажал Ctrl+C, пока выполнялась команда. */
+int  terminal_app_cancel_requested(const terminal_app_t *app);
 
 #endif

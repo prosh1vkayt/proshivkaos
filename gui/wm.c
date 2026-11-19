@@ -12,6 +12,7 @@
 #include "settings_app.h"
 #include "mouse.h"
 #include "rtc.h"
+#include "terminal_net.h"
 
 int keyboard_poll(void);          /* arch/x86/keyboard.c */
 
@@ -129,6 +130,198 @@ static void apply_resolution(int w, int h) {
     render_frame();
 }
 
+/* --- Один проход цикла событий --------------------------------------------
+ * Вынесен из gui_main, потому что вызывается и изнутри сетевых команд: пока
+ * ping или http ждут ответа, окно не должно замирать — оно продолжает
+ * реагировать на мышь, перерисовываться и принимать Ctrl+C (см. net_pump_cb). */
+static int dragging = 0, resizing = 0;
+static gui_window_t *drag_target = 0;
+static gui_window_t *resize_target = 0;
+static int need_render = 0;               /* кто-то (команда терминала) просит перерисовку */
+
+static void gui_request_redraw(void) { need_render = 1; }
+
+static void gui_step(void) {
+    rtc_uptime_tick();
+
+    int handled_something = 0;
+
+    int c = keyboard_poll();
+    if (c != -1) {
+        handled_something = 1;
+
+        if (c == '\t') {
+            if (focus == FOCUS_TERMINAL && set_win.open) focus = FOCUS_SETTINGS;
+            else if (focus == FOCUS_SETTINGS && term_win.open) focus = FOCUS_TERMINAL;
+            else if (term_win.open) focus = FOCUS_TERMINAL;
+            else if (set_win.open) focus = FOCUS_SETTINGS;
+            term_win.focused = (focus == FOCUS_TERMINAL);
+            set_win.focused  = (focus == FOCUS_SETTINGS);
+        } else if (focus == FOCUS_TERMINAL) {
+            terminal_app_handle_char(&term, (char)c);
+        } else if (focus == FOCUS_SETTINGS) {
+            int r = settings_app_handle_char(&settings, (char)c);
+            if (r == SETTINGS_RES_320x200) apply_resolution(320, 200);
+            else if (r == SETTINGS_RES_640x480) apply_resolution(640, 480);
+            else if (r == SETTINGS_RES_800x600) apply_resolution(800, 600);
+            else if (r == SETTINGS_WALLPAPER) desktop_wallpaper = 1;
+            else if (r == SETTINGS_COLOR_CHANGED) desktop_wallpaper = 0;
+            else if (r == SETTINGS_THEME_LIGHT) { theme = THEME_LIGHT; apply_theme(); }
+            else if (r == SETTINGS_THEME_DARK)  { theme = THEME_DARK;  apply_theme(); }
+        }
+    }
+
+    mouse_event_t mev;
+    if (mouse_poll(&mev)) {
+        handled_something = 1;
+
+        mouse_x += mev.dx;
+        mouse_y += mev.dy;
+        if (mouse_x < 0) mouse_x = 0;
+        if (mouse_y < 0) mouse_y = 0;
+        if (mouse_x >= screen_w) mouse_x = screen_w - 1;
+        if (mouse_y >= screen_h) mouse_y = screen_h - 1;
+
+        if (mev.left) {
+            if (dragging) {
+                drag_target->x += mev.dx;
+                drag_target->y += mev.dy;
+            } else if (resizing) {
+                resize_target->w += mev.dx;
+                resize_target->h += mev.dy;
+                if (resize_target->w < MIN_WIN_W) resize_target->w = MIN_WIN_W;
+                if (resize_target->h < MIN_WIN_H) resize_target->h = MIN_WIN_H;
+            } else if (start_menu_open) {
+                int ix, iy, iw, ih;
+                gui_start_menu_item_rect(screen_h, 0, &ix, &iy, &iw, &ih);
+                if (gui_point_in_rect(mouse_x, mouse_y, ix, iy, iw, ih)) {
+                    term_win.open = 1;
+                    focus = FOCUS_TERMINAL;
+                    term_win.focused = 1; set_win.focused = 0;
+                } else {
+                    gui_start_menu_item_rect(screen_h, 1, &ix, &iy, &iw, &ih);
+                    if (gui_point_in_rect(mouse_x, mouse_y, ix, iy, iw, ih)) {
+                        set_win.open = 1;
+                        focus = FOCUS_SETTINGS;
+                        term_win.focused = 0; set_win.focused = 1;
+                    }
+                }
+                start_menu_open = 0;
+            } else {
+                int sx, sy, sw, sh;
+                gui_start_button_rect(screen_w, screen_h, &sx, &sy, &sw, &sh);
+
+                int term_tb_index = -1, set_tb_index = -1;
+                int idx = 0;
+                if (term_win.open) term_tb_index = idx++;
+                if (set_win.open)  set_tb_index  = idx++;
+
+                int term_tb_x = 0, term_tb_y = 0, term_tb_w = 0, term_tb_h = 0;
+                int set_tb_x = 0, set_tb_y = 0, set_tb_w = 0, set_tb_h = 0;
+                if (term_tb_index >= 0)
+                    gui_taskbar_button_rect(screen_w, screen_h, term_tb_index,
+                                             &term_tb_x, &term_tb_y, &term_tb_w, &term_tb_h);
+                if (set_tb_index >= 0)
+                    gui_taskbar_button_rect(screen_w, screen_h, set_tb_index,
+                                             &set_tb_x, &set_tb_y, &set_tb_w, &set_tb_h);
+
+                if (gui_point_in_rect(mouse_x, mouse_y, sx, sy, sw, sh)) {
+                    start_menu_open = 1;
+
+                } else if (term_tb_index >= 0 &&
+                           gui_point_in_rect(mouse_x, mouse_y, term_tb_x, term_tb_y, term_tb_w, term_tb_h)) {
+                    if (term_win.minimized) {
+                        term_win.minimized = 0;
+                        focus = FOCUS_TERMINAL;
+                        term_win.focused = 1; set_win.focused = 0;
+                    } else if (focus == FOCUS_TERMINAL) {
+                        term_win.minimized = 1;
+                    } else {
+                        focus = FOCUS_TERMINAL;
+                        term_win.focused = 1; set_win.focused = 0;
+                    }
+
+                } else if (set_tb_index >= 0 &&
+                           gui_point_in_rect(mouse_x, mouse_y, set_tb_x, set_tb_y, set_tb_w, set_tb_h)) {
+                    if (set_win.minimized) {
+                        set_win.minimized = 0;
+                        focus = FOCUS_SETTINGS;
+                        set_win.focused = 1; term_win.focused = 0;
+                    } else if (focus == FOCUS_SETTINGS) {
+                        set_win.minimized = 1;
+                    } else {
+                        focus = FOCUS_SETTINGS;
+                        set_win.focused = 1; term_win.focused = 0;
+                    }
+
+                } else if (term_win.open && !term_win.minimized && gui_point_in_close_button(mouse_x, mouse_y, &term_win)) {
+                    term_win.open = 0;
+                    if (focus == FOCUS_TERMINAL) focus = set_win.open ? FOCUS_SETTINGS : FOCUS_NONE;
+                    term_win.focused = 0; set_win.focused = (focus == FOCUS_SETTINGS);
+                } else if (set_win.open && !set_win.minimized && gui_point_in_close_button(mouse_x, mouse_y, &set_win)) {
+                    set_win.open = 0;
+                    if (focus == FOCUS_SETTINGS) focus = term_win.open ? FOCUS_TERMINAL : FOCUS_NONE;
+                    set_win.focused = 0; term_win.focused = (focus == FOCUS_TERMINAL);
+
+                } else if (term_win.open && !term_win.minimized && gui_point_in_maximize_button(mouse_x, mouse_y, &term_win)) {
+                    toggle_maximize(&term_win);
+                    focus = FOCUS_TERMINAL; term_win.focused = 1; set_win.focused = 0;
+                } else if (set_win.open && !set_win.minimized && gui_point_in_maximize_button(mouse_x, mouse_y, &set_win)) {
+                    toggle_maximize(&set_win);
+                    focus = FOCUS_SETTINGS; set_win.focused = 1; term_win.focused = 0;
+
+                } else if (term_win.open && !term_win.minimized && gui_point_in_minimize_button(mouse_x, mouse_y, &term_win)) {
+                    term_win.minimized = 1;
+                } else if (set_win.open && !set_win.minimized && gui_point_in_minimize_button(mouse_x, mouse_y, &set_win)) {
+                    set_win.minimized = 1;
+
+                } else if (term_win.open && !term_win.minimized && !term_win.maximized &&
+                           gui_point_in_resize_grip(mouse_x, mouse_y, &term_win)) {
+                    resizing = 1; resize_target = &term_win;
+                    focus = FOCUS_TERMINAL; term_win.focused = 1; set_win.focused = 0;
+                } else if (set_win.open && !set_win.minimized && !set_win.maximized &&
+                           gui_point_in_resize_grip(mouse_x, mouse_y, &set_win)) {
+                    resizing = 1; resize_target = &set_win;
+                    focus = FOCUS_SETTINGS; set_win.focused = 1; term_win.focused = 0;
+
+                } else if (term_win.open && !term_win.minimized && !term_win.maximized &&
+                           gui_point_in_titlebar(mouse_x, mouse_y, &term_win)) {
+                    dragging = 1; drag_target = &term_win;
+                    focus = FOCUS_TERMINAL; term_win.focused = 1; set_win.focused = 0;
+                } else if (set_win.open && !set_win.minimized && !set_win.maximized &&
+                           gui_point_in_titlebar(mouse_x, mouse_y, &set_win)) {
+                    dragging = 1; drag_target = &set_win;
+                    focus = FOCUS_SETTINGS; set_win.focused = 1; term_win.focused = 0;
+
+                } else if (term_win.open && !term_win.minimized &&
+                           gui_point_in_rect(mouse_x, mouse_y, term_win.x, term_win.y, term_win.w, term_win.h)) {
+                    focus = FOCUS_TERMINAL; term_win.focused = 1; set_win.focused = 0;
+                } else if (set_win.open && !set_win.minimized &&
+                           gui_point_in_rect(mouse_x, mouse_y, set_win.x, set_win.y, set_win.w, set_win.h)) {
+                    focus = FOCUS_SETTINGS; set_win.focused = 1; term_win.focused = 0;
+                }
+            }
+        } else {
+            dragging = 0;
+            resizing = 0;
+            drag_target = 0;
+            resize_target = 0;
+        }
+    }
+
+    if (handled_something || need_render) {
+        need_render = 0;
+        render_frame();
+    }
+}
+
+/* Вызывается из сетевых циклов ожидания. Возвращает не 0, если терминал
+ * получил Ctrl+C — тогда команда прерывается. */
+static int net_pump_cb(void) {
+    gui_step();
+    return terminal_app_cancel_requested(&term);
+}
+
 void gui_main(void) {
     hal_gfx_init();
     mouse_init();
@@ -157,179 +350,8 @@ void gui_main(void) {
 
     render_frame();
 
-    int dragging = 0, resizing = 0;
-    gui_window_t *drag_target = 0;
-    gui_window_t *resize_target = 0;
+    terminal_net_install(gui_request_redraw, net_pump_cb);
 
-    for (;;) {
-        rtc_uptime_tick();
-
-        int handled_something = 0;
-
-        int c = keyboard_poll();
-        if (c != -1) {
-            handled_something = 1;
-
-            if (c == '\t') {
-                if (focus == FOCUS_TERMINAL && set_win.open) focus = FOCUS_SETTINGS;
-                else if (focus == FOCUS_SETTINGS && term_win.open) focus = FOCUS_TERMINAL;
-                else if (term_win.open) focus = FOCUS_TERMINAL;
-                else if (set_win.open) focus = FOCUS_SETTINGS;
-                term_win.focused = (focus == FOCUS_TERMINAL);
-                set_win.focused  = (focus == FOCUS_SETTINGS);
-            } else if (focus == FOCUS_TERMINAL) {
-                terminal_app_handle_char(&term, (char)c);
-            } else if (focus == FOCUS_SETTINGS) {
-                int r = settings_app_handle_char(&settings, (char)c);
-                if (r == SETTINGS_RES_320x200) apply_resolution(320, 200);
-                else if (r == SETTINGS_RES_640x480) apply_resolution(640, 480);
-                else if (r == SETTINGS_RES_800x600) apply_resolution(800, 600);
-                else if (r == SETTINGS_WALLPAPER) desktop_wallpaper = 1;
-                else if (r == SETTINGS_COLOR_CHANGED) desktop_wallpaper = 0;
-                else if (r == SETTINGS_THEME_LIGHT) { theme = THEME_LIGHT; apply_theme(); }
-                else if (r == SETTINGS_THEME_DARK)  { theme = THEME_DARK;  apply_theme(); }
-            }
-        }
-
-        mouse_event_t mev;
-        if (mouse_poll(&mev)) {
-            handled_something = 1;
-
-            mouse_x += mev.dx;
-            mouse_y += mev.dy;
-            if (mouse_x < 0) mouse_x = 0;
-            if (mouse_y < 0) mouse_y = 0;
-            if (mouse_x >= screen_w) mouse_x = screen_w - 1;
-            if (mouse_y >= screen_h) mouse_y = screen_h - 1;
-
-            if (mev.left) {
-                if (dragging) {
-                    drag_target->x += mev.dx;
-                    drag_target->y += mev.dy;
-                } else if (resizing) {
-                    resize_target->w += mev.dx;
-                    resize_target->h += mev.dy;
-                    if (resize_target->w < MIN_WIN_W) resize_target->w = MIN_WIN_W;
-                    if (resize_target->h < MIN_WIN_H) resize_target->h = MIN_WIN_H;
-                } else if (start_menu_open) {
-                    int ix, iy, iw, ih;
-                    gui_start_menu_item_rect(screen_h, 0, &ix, &iy, &iw, &ih);
-                    if (gui_point_in_rect(mouse_x, mouse_y, ix, iy, iw, ih)) {
-                        term_win.open = 1;
-                        focus = FOCUS_TERMINAL;
-                        term_win.focused = 1; set_win.focused = 0;
-                    } else {
-                        gui_start_menu_item_rect(screen_h, 1, &ix, &iy, &iw, &ih);
-                        if (gui_point_in_rect(mouse_x, mouse_y, ix, iy, iw, ih)) {
-                            set_win.open = 1;
-                            focus = FOCUS_SETTINGS;
-                            term_win.focused = 0; set_win.focused = 1;
-                        }
-                    }
-                    start_menu_open = 0;
-                } else {
-                    int sx, sy, sw, sh;
-                    gui_start_button_rect(screen_w, screen_h, &sx, &sy, &sw, &sh);
-
-                    int term_tb_index = -1, set_tb_index = -1;
-                    int idx = 0;
-                    if (term_win.open) term_tb_index = idx++;
-                    if (set_win.open)  set_tb_index  = idx++;
-
-                    int term_tb_x = 0, term_tb_y = 0, term_tb_w = 0, term_tb_h = 0;
-                    int set_tb_x = 0, set_tb_y = 0, set_tb_w = 0, set_tb_h = 0;
-                    if (term_tb_index >= 0)
-                        gui_taskbar_button_rect(screen_w, screen_h, term_tb_index,
-                                                 &term_tb_x, &term_tb_y, &term_tb_w, &term_tb_h);
-                    if (set_tb_index >= 0)
-                        gui_taskbar_button_rect(screen_w, screen_h, set_tb_index,
-                                                 &set_tb_x, &set_tb_y, &set_tb_w, &set_tb_h);
-
-                    if (gui_point_in_rect(mouse_x, mouse_y, sx, sy, sw, sh)) {
-                        start_menu_open = 1;
-
-                    } else if (term_tb_index >= 0 &&
-                               gui_point_in_rect(mouse_x, mouse_y, term_tb_x, term_tb_y, term_tb_w, term_tb_h)) {
-                        if (term_win.minimized) {
-                            term_win.minimized = 0;
-                            focus = FOCUS_TERMINAL;
-                            term_win.focused = 1; set_win.focused = 0;
-                        } else if (focus == FOCUS_TERMINAL) {
-                            term_win.minimized = 1;
-                        } else {
-                            focus = FOCUS_TERMINAL;
-                            term_win.focused = 1; set_win.focused = 0;
-                        }
-
-                    } else if (set_tb_index >= 0 &&
-                               gui_point_in_rect(mouse_x, mouse_y, set_tb_x, set_tb_y, set_tb_w, set_tb_h)) {
-                        if (set_win.minimized) {
-                            set_win.minimized = 0;
-                            focus = FOCUS_SETTINGS;
-                            set_win.focused = 1; term_win.focused = 0;
-                        } else if (focus == FOCUS_SETTINGS) {
-                            set_win.minimized = 1;
-                        } else {
-                            focus = FOCUS_SETTINGS;
-                            set_win.focused = 1; term_win.focused = 0;
-                        }
-
-                    } else if (term_win.open && !term_win.minimized && gui_point_in_close_button(mouse_x, mouse_y, &term_win)) {
-                        term_win.open = 0;
-                        if (focus == FOCUS_TERMINAL) focus = set_win.open ? FOCUS_SETTINGS : FOCUS_NONE;
-                        term_win.focused = 0; set_win.focused = (focus == FOCUS_SETTINGS);
-                    } else if (set_win.open && !set_win.minimized && gui_point_in_close_button(mouse_x, mouse_y, &set_win)) {
-                        set_win.open = 0;
-                        if (focus == FOCUS_SETTINGS) focus = term_win.open ? FOCUS_TERMINAL : FOCUS_NONE;
-                        set_win.focused = 0; term_win.focused = (focus == FOCUS_TERMINAL);
-
-                    } else if (term_win.open && !term_win.minimized && gui_point_in_maximize_button(mouse_x, mouse_y, &term_win)) {
-                        toggle_maximize(&term_win);
-                        focus = FOCUS_TERMINAL; term_win.focused = 1; set_win.focused = 0;
-                    } else if (set_win.open && !set_win.minimized && gui_point_in_maximize_button(mouse_x, mouse_y, &set_win)) {
-                        toggle_maximize(&set_win);
-                        focus = FOCUS_SETTINGS; set_win.focused = 1; term_win.focused = 0;
-
-                    } else if (term_win.open && !term_win.minimized && gui_point_in_minimize_button(mouse_x, mouse_y, &term_win)) {
-                        term_win.minimized = 1;
-                    } else if (set_win.open && !set_win.minimized && gui_point_in_minimize_button(mouse_x, mouse_y, &set_win)) {
-                        set_win.minimized = 1;
-
-                    } else if (term_win.open && !term_win.minimized && !term_win.maximized &&
-                               gui_point_in_resize_grip(mouse_x, mouse_y, &term_win)) {
-                        resizing = 1; resize_target = &term_win;
-                        focus = FOCUS_TERMINAL; term_win.focused = 1; set_win.focused = 0;
-                    } else if (set_win.open && !set_win.minimized && !set_win.maximized &&
-                               gui_point_in_resize_grip(mouse_x, mouse_y, &set_win)) {
-                        resizing = 1; resize_target = &set_win;
-                        focus = FOCUS_SETTINGS; set_win.focused = 1; term_win.focused = 0;
-
-                    } else if (term_win.open && !term_win.minimized && !term_win.maximized &&
-                               gui_point_in_titlebar(mouse_x, mouse_y, &term_win)) {
-                        dragging = 1; drag_target = &term_win;
-                        focus = FOCUS_TERMINAL; term_win.focused = 1; set_win.focused = 0;
-                    } else if (set_win.open && !set_win.minimized && !set_win.maximized &&
-                               gui_point_in_titlebar(mouse_x, mouse_y, &set_win)) {
-                        dragging = 1; drag_target = &set_win;
-                        focus = FOCUS_SETTINGS; set_win.focused = 1; term_win.focused = 0;
-
-                    } else if (term_win.open && !term_win.minimized &&
-                               gui_point_in_rect(mouse_x, mouse_y, term_win.x, term_win.y, term_win.w, term_win.h)) {
-                        focus = FOCUS_TERMINAL; term_win.focused = 1; set_win.focused = 0;
-                    } else if (set_win.open && !set_win.minimized &&
-                               gui_point_in_rect(mouse_x, mouse_y, set_win.x, set_win.y, set_win.w, set_win.h)) {
-                        focus = FOCUS_SETTINGS; set_win.focused = 1; term_win.focused = 0;
-                    }
-                }
-            } else {
-                dragging = 0;
-                resizing = 0;
-                drag_target = 0;
-                resize_target = 0;
-            }
-        }
-
-        if (handled_something)
-            render_frame();
-    }
+    for (;;)
+        gui_step();
 }

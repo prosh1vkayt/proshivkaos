@@ -17,6 +17,14 @@ static void str_copy(char *dst, const char *src, size_t max) {
     dst[i] = '\0';
 }
 
+/* Внешние команды (см. terminal_app.h). */
+static terminal_ext_cmd_fn ext_cmd;
+static const char *ext_help;
+
+void terminal_app_set_ext_command(terminal_ext_cmd_fn fn) { ext_cmd = fn; }
+void terminal_app_set_ext_help(const char *text)         { ext_help = text; }
+int  terminal_app_cancel_requested(const terminal_app_t *app) { return app->cancel; }
+
 static int tokenize(char *line, char *argv[], int max_args) {
     int argc = 0;
     char *p = line;
@@ -121,8 +129,8 @@ static void write_padded(gconsole_t *gc, unsigned int v, int width) {
 }
 
 static void run_command(terminal_app_t *app, char *line) {
-    char *argv[4];
-    int argc = tokenize(line, argv, 4);
+    char *argv[TERM_MAX_ARGS];
+    int argc = tokenize(line, argv, TERM_MAX_ARGS);
     if (argc == 0) return;
 
     char path[RAMFS_MAX_PATH_LEN];
@@ -230,6 +238,13 @@ static void run_command(terminal_app_t *app, char *line) {
     } else if (str_eq(argv[0], "help")) {
         gconsole_write(&app->console, "\nLS CD PWD MKDIR CAT TOUCH EDIT");
         gconsole_write(&app->console, "\nCLEAR DATE UPTIME NEOFETCH HELP");
+        if (ext_help) {
+            gconsole_putc(&app->console, '\n');
+            gconsole_write(&app->console, ext_help);
+        }
+
+    } else if (ext_cmd && ext_cmd(app, argc, argv)) {
+        /* выполнена внешней командой (сеть) */
 
     } else {
         print_error(app, "unknown command");
@@ -246,6 +261,8 @@ void terminal_app_init_colors(terminal_app_t *app, const gui_window_t *win,
     app->line_len = 0;
     app->in_edit_mode = 0;
     app->edit_total = 0;
+    app->busy = 0;
+    app->cancel = 0;
 
     ramfs_mkdir(TERM_HOME_DIR);
     str_copy(app->cwd, TERM_HOME_DIR, sizeof(app->cwd));
@@ -255,6 +272,12 @@ void terminal_app_init_colors(terminal_app_t *app, const gui_window_t *win,
 }
 
 void terminal_app_handle_char(terminal_app_t *app, char c) {
+    /* Идёт команда: ввод не принимаем, только Ctrl+C (код 3) её прерывает. */
+    if (app->busy) {
+        if (c == 3) app->cancel = 1;
+        return;
+    }
+
     if (c == '\n') {
         app->line[app->line_len] = '\0';
 

@@ -23,7 +23,7 @@ int net_ping(const uint8_t dst[4], uint16_t seq) {
     if (r != NET_OK)      return PING_TX_ERR;
 
     uint8_t proto, src[4], d[4];
-    for (long t = 0; t < NET_POLL_LIMIT; t++) {
+    for (long t = 0; NET_WAITING(t, NET_POLL_LIMIT); t++) {
         size_t n = net_ip_recv(&proto, src, d, rx, sizeof rx);
         if (n >= 8 && proto == 1 && net_ip_eq(src, dst) && rx[0] == 0 &&
             net_get16(rx + 4) == PING_ID && net_get16(rx + 6) == seq)

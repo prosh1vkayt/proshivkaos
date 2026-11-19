@@ -57,7 +57,7 @@ int udp_recv(uint16_t port, void *buf, size_t max,
     static uint8_t rx[8 + UDP_MAX];
     uint8_t proto, src[4], dst[4];
 
-    for (long t = 0; t < limit; t++) {
+    for (long t = 0; NET_WAITING(t, limit); t++) {
         size_t n = net_ip_recv(&proto, src, dst, rx, sizeof rx);
         if (n < 8 || proto != UDP_PROTO) continue;
         if (net_get16(rx + 2) != port) continue;
